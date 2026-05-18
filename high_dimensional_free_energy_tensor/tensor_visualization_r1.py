@@ -85,7 +85,7 @@ def build_interpolators_for_T(df, T):
 
 # ================= HEADER =================
 st.title("🔷 Co-Cr-Fe-Ni Gibbs Free Energy Tensor Visualization")
-st.markdown("""
+st.markdown(r"""
 This app reconstructs the continuous $G(\mathbf{x}, T)$ hypersurface from discrete CSV data.  
 The stable phase is determined by $G_{\text{stable}} = \min(G_{\text{LIQ}}, G_{\text{FCC}})$.
 """)
@@ -271,7 +271,7 @@ else:
 # ================= PLOTTING =================
 fig = go.Figure()
 
-# Colorbar config (Plotly 5.x compatible)
+# Colorbar config (Plotly 5.x / 6.x compatible)
 def make_cbar(title_text):
     return dict(
         title=dict(text=title_text, font=dict(size=cbar_title_size)),
@@ -354,9 +354,9 @@ if query_result is not None and not np.isnan(x_q[0]):
                        f"Phase={query_result['Phase']}<extra></extra>")
     ))
 
-# Axis styling
+# Axis styling (Plotly 5.x / 6.x compatible — no titlefont!)
 axis_base = dict(
-    titlefont=dict(size=axis_title_font),
+    title=dict(font=dict(size=axis_title_font)),
     tickfont=dict(size=tick_font),
     showbackground=True,
     backgroundcolor=bg_color,
@@ -369,9 +369,9 @@ axis_base = dict(
 fig.update_layout(
     template=template if template != "none" else None,
     scene=dict(
-        xaxis=dict(title=x_title, **axis_base),
-        yaxis=dict(title=y_title, **axis_base),
-        zaxis=dict(title=z_title, **axis_base),
+        xaxis=dict(title=dict(text=x_title), **axis_base),
+        yaxis=dict(title=dict(text=y_title), **axis_base),
+        zaxis=dict(title=dict(text=z_title), **axis_base),
         aspectmode="cube",
         camera=dict(eye=dict(x=1.5, y=1.5, z=1.2))
     ),
