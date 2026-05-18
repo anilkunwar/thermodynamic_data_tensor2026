@@ -2,13 +2,30 @@
 CoCrFeNi Gibbs Free Energy Explorer
 Calculates phase stability and interface driving forces
 """
-import streamlit as st
-import pandas as pd
+import os
+import sys
+import glob
 import numpy as np
+import pandas as pd
+import streamlit as st
 import plotly.graph_objects as go
 from scipy.interpolate import LinearNDInterpolator
 from pathlib import Path
-import glob
+
+# =============================================
+# PATH CONFIGURATION (FIXED)
+# =============================================
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CSV_FILES_DIR = os.path.join(SCRIPT_DIR, "csv_files")
+FIGURES_DIR = os.path.join(SCRIPT_DIR, "figures")
+
+# Ensure directories exist
+os.makedirs(CSV_FILES_DIR, exist_ok=True)
+os.makedirs(FIGURES_DIR, exist_ok=True)
+
+# Add script dir to path for imports if needed
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
 
 # ================= CONFIGURATION =================
 st.set_page_config(page_title="CoCrFeNi Phase Stability", layout="wide", page_icon="⚛️")
@@ -18,38 +35,73 @@ st.markdown("""
 ΔG (J/mol) → ΔGᵥ = ΔG/Vₘ (Pa = N/m²) → Interface driving pressure
 """)
 
+# Show debug info in sidebar (optional, remove in production)
+with st.sidebar.expander("🔍 Path Debug Info"):
+    st.code(f"SCRIPT_DIR: {SCRIPT_DIR}")
+    st.code(f"CSV_FILES_DIR: {CSV_FILES_DIR}")
+    files_found = glob.glob(os.path.join(CSV_FILES_DIR, "Gibbs_*.csv"))
+    st.write(f"📁 CSV files found: {len(files_found)}")
+    if files_found:
+        st.write("First 3 files:")
+        for f in files_found[:3]:
+            st.text(os.path.basename(f))
+
 # ================= CONSTANTS =================
 DEFAULT_VM = 7.2e-6  # m³/mol (typical for CoCrFeNi HEA)
-CSV_DIR = "csv_files"
 
 # ================= DATA LOADING =================
 @st.cache_data
-def load_temperature_data():
+def load_temperature_data(csv_dir):
     """Load all Gibbs_*.csv files into a dictionary keyed by temperature."""
-    files = sorted(glob.glob(f"{CSV_DIR}/Gibbs_*K.csv"))
+    files = sorted(glob.glob(os.path.join(csv_dir, "Gibbs_*.csv")))
+    
     if not files:
-        st.error(f"No CSV files found in `{CSV_DIR}/`")
-        st.stop()
+        return None, []
     
     data = {}
     for f in files:
         try:
-            T = int(Path(f).stem.replace("Gibbs_", "").replace("K", ""))
+            # Extract temperature from filename: Gibbs_1000K.csv -> 1000
+            basename = Path(f).stem  # "Gibbs_1000K"
+            T = int(basename.replace("Gibbs_", "").replace("K", ""))
+            
             df = pd.read_csv(f, usecols=["Co", "Cr", "Fe", "Ni", "G_LIQ", "G_FCC"])
-            # Validate mole fractions sum to ~1
+            
+            # Validate mole fractions sum to ~1 (tolerance for floating point)
             df["sum_x"] = df["Co"] + df["Cr"] + df["Fe"] + df["Ni"]
             df = df[np.abs(df["sum_x"] - 1.0) < 1e-6].copy()
+            
             data[T] = df[["Co", "Cr", "Fe", "G_LIQ", "G_FCC"]]
         except Exception as e:
-            st.warning(f"Skipping {f}: {e}")
+            st.warning(f"⚠️ Skipping {os.path.basename(f)}: {e}")
     
     if not data:
-        st.error("No valid data loaded.")
-        st.stop()
+        return None, []
     
     return data, sorted(data.keys())
 
-data_by_T, temperatures = load_temperature_data()
+# Try to load data
+data_by_T, temperatures = load_temperature_data(CSV_FILES_DIR)
+
+# Handle no data case
+if data_by_T is None or len(temperatures) == 0:
+    st.error(f"❌ No valid CSV files found in `{CSV_FILES_DIR}`")
+    st.info("""
+    **Expected file format**: `Gibbs_300K.csv`, `Gibbs_400K.csv`, ..., `Gibbs_3300K.csv`
+    
+    **Required columns**: `Co`, `Cr`, `Fe`, `Ni`, `G_LIQ`, `G_FCC`
+    
+    **Directory structure**:
+    ```
+    your_project/
+    ├── app.py
+    └── csv_files/
+        ├── Gibbs_300K.csv
+        ├── Gibbs_400K.csv
+        └── ...
+    ```
+    """)
+    st.stop()
 
 # ================= INTERPOLATORS =================
 @st.cache_resource
@@ -59,6 +111,8 @@ def build_interpolators(data_dict, temp_list):
     
     for T in temp_list:
         df = data_dict[T]
+        if len(df) < 4:  # Need minimum points for interpolation
+            continue
         points = df[["Co", "Cr", "Fe"]].values
         liq_interp[T] = LinearNDInterpolator(points, df["G_LIQ"].values)
         fcc_interp[T] = LinearNDInterpolator(points, df["G_FCC"].values)
@@ -70,7 +124,7 @@ liq_interp, fcc_interp = build_interpolators(data_by_T, temperatures)
 # ================= SIDEBAR CONTROLS =================
 st.sidebar.header("🎛️ Input Parameters")
 
-T = st.sidebar.select_slider("Temperature (K)", options=temperatures, value=1000)
+T = st.sidebar.select_slider("Temperature (K)", options=temperatures, value=1000 if 1000 in temperatures else temperatures[0])
 
 col1, col2, col3 = st.sidebar.columns(3)
 x_co = col1.number_input("x_Co", 0.0, 1.0, 0.25, 0.01)
@@ -120,7 +174,10 @@ else:
     
     # Phase stability
     stable_phase = "FCC" if g_fcc < g_liq else "LIQUID"
-    st.success(f"🏆 **Most stable phase: {stable_phase}**") if stable_phase == "FCC" else st.warning(f"🏆 **Most stable phase: {stable_phase}**")
+    if stable_phase == "FCC":
+        st.success(f"🏆 **Most stable phase: {stable_phase}**")
+    else:
+        st.warning(f"🏆 **Most stable phase: {stable_phase}**")
     
     st.divider()
     
@@ -166,7 +223,6 @@ with tab1:
     scan_var = st.radio("Vary", ["x_Co", "x_Cr", "x_Fe"], horizontal=True)
     fixed_val = st.slider("Fixed value for other two components", 0.0, 0.4, 0.2, 0.01)
     
-    # Generate scan points (ensure sum ≤ 1)
     max_val = 1.0 - 2*fixed_val - 0.01
     if max_val < 0.01:
         st.error("Fixed values too large for valid scan. Reduce them.")
@@ -184,23 +240,11 @@ with tab1:
             g_liq_scan.append(gl)
             g_fcc_scan.append(gf)
         
-        # Plot
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=x_vals, y=g_liq_scan, name="G_LIQUID", 
                                 line=dict(color="#1f77b4", width=2)))
         fig.add_trace(go.Scatter(x=x_vals, y=g_fcc_scan, name="G_FCC", 
                                 line=dict(color="#d62728", width=2)))
-        
-        # Add stability region shading
-        y_min = min(min(g_liq_scan), min(g_fcc_scan))
-        y_max = max(max(g_liq_scan), max(g_fcc_scan))
-        for i, (gl, gf) in enumerate(zip(g_liq_scan, g_fcc_scan)):
-            if gf < gl:
-                fig.add_vrect(x0=x_vals[i], x1=x_vals[min(i+1, len(x_vals)-1)],
-                             fillcolor="rgba(214,39,40,0.1)", layer="below", line_width=0)
-            else:
-                fig.add_vrect(x0=x_vals[i], x1=x_vals[min(i+1, len(x_vals)-1)],
-                             fillcolor="rgba(31,119,180,0.1)", layer="below", line_width=0)
         
         fig.update_layout(
             title=f"Gibbs Energy vs {scan_var} at T={T} K (others={fixed_val})",
@@ -212,7 +256,6 @@ with tab1:
 with tab2:
     st.markdown("### Phase stability vs Temperature (fixed composition)")
     
-    # Use current composition
     x_co_fix, x_cr_fix, x_fe_fix = x_co, x_cr, x_fe
     T_scan = temperatures
     stable_phases, delta_G_scan = [], []
@@ -226,7 +269,6 @@ with tab2:
             stable_phases.append(None)
             delta_G_scan.append(None)
     
-    # Color-coded phase map
     fig = go.Figure()
     colors = ["red" if p == "FCC" else "blue" if p == "LIQUID" else "gray" for p in stable_phases]
     
@@ -239,8 +281,6 @@ with tab2:
     fig.update_layout(
         title=f"Phase Stability vs T for Co{x_co_fix:.2f}Cr{x_cr_fix:.2f}Fe{x_fe_fix:.2f}Ni{1-x_co_fix-x_cr_fix-x_fe_fix:.2f}",
         xaxis_title="Temperature (K)", yaxis_title="ΔG (J/mol)",
-        annotations=[dict(x=0.5, y=1.05, text="🔴 FCC stable | 🔵 LIQUID stable", 
-                         showarrow=False, xref="paper", font=dict(size=12))],
         height=400
     )
     st.plotly_chart(fig, use_container_width=True)
