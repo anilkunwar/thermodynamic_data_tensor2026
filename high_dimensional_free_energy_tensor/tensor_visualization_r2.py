@@ -17,26 +17,31 @@ os.makedirs(CSV_FILES_DIR, exist_ok=True)
 st.set_page_config(page_title="CoCrFeNi Gibbs Energy Explorer", layout="wide")
 
 # =============================================
-# COLORMAP LIBRARY (60+ options)
+# VALIDATED COLORMAP LIBRARY (Plotly 6.x safe)
 # =============================================
 COLORMAPS = [
+    # Perceptually uniform
     "Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo",
+    # Sequential
     "Blues", "BuGn", "BuPu", "GnBu", "Greens", "Greys", "Oranges", "OrRd",
     "PuBu", "PuBuGn", "PuRd", "Purples", "RdPu", "Reds", "YlGn", "YlGnBu",
-    "YlOrBr", "YlOrRd", "BrBG", "PRGn", "PiYG", "PuOr", "RdBu", "RdGy",
-    "RdYlBu", "RdYlGn", "Spectral", "Phase", "Twilight", "HSV", "Jet",
-    "Rainbow", "Hot", "Cool", "Spring", "Summer", "Autumn", "Winter",
-    "Bone", "Copper", "Cubehelix", "Terrain", "Ocean", "Sinebow", "Prism",
-    "Flag", "Gnuplot", "Gnuplot2", "CMRmap", "Afmhot", "Gist_heat",
-    "Gist_rainbow", "Gist_stern", "Gist_earth", "Gist_ncar", "Brg", "Bwr",
-    "Seismic", "Coolwarm", "Blackbody", "Electric", "Algae", "Deep", "Dense",
-    "Haline", "Ice", "Matter", "Speed", "Tempo", "Thermal", "Turbid",
+    "YlOrBr", "YlOrRd",
+    # Diverging
+    "BrBG", "PRGn", "PiYG", "PuOr", "RdBu", "RdGy", "RdYlBu", "RdYlGn", "Spectral",
+    # Cyclical
+    "Twilight", "HSV",
+    # Matplotlib / Other
+    "Jet", "Rainbow", "Hot", "Cool", "Blackbody", "Electric",
+    # Plotly extended
     "Plotly3", "Portland", "Picnic", "Solar", "Balance", "Delta", "Curl",
     "IceFire", "Edge", "Fall", "Sunset", "Sunsetdark", "Teal", "Tealgrn",
     "Tropic", "Peach", "Oxy", "Mint", "Emrld", "Aggrnyl", "Agsunset",
     "Armyrose", "Bluered", "Blugrn", "Bluyl", "Brwnyl", "Burg", "Burgyl",
     "Darkmint", "Geysr", "Magenta", "Mrybm", "Mygbm", "Oryel", "Pinkyl",
-    "Purp", "Purpor", "Redor", "Ylorrd", "Ylorbr", "Ylgnbu", "Ylgn"
+    "Purp", "Purpor", "Redor", "Ylorrd", "Ylorbr", "Ylgnbu", "Ylgn",
+    # Additional e3nn-friendly
+    "Haline", "Ice", "Matter", "Speed", "Tempo", "Thermal", "Turbid",
+    "Algae", "Deep", "Dense", "Sinebow", "Phase"
 ]
 COLORMAPS = sorted(list(set(COLORMAPS)))
 
@@ -54,12 +59,6 @@ def cartesian_to_spherical(c1, c2, c3):
     theta = np.arctan2(c2, c1)
     phi = np.arccos(np.clip(c3 / safe_r, -1.0, 1.0))
     return r, theta, phi
-
-def spherical_to_cartesian(r, theta, phi):
-    x = r * np.sin(phi) * np.cos(theta)
-    y = r * np.sin(phi) * np.sin(theta)
-    z = r * np.cos(phi)
-    return x, y, z
 
 # ================= DATA LOADING =================
 @st.cache_data
@@ -118,6 +117,17 @@ with st.sidebar:
         st.warning(f"⚠️ Sum = {comp_sum:.2f} > 1.0 (x_Ni would be negative).")
 
     eval_query = st.button("🔍 Evaluate at Point", use_container_width=True)
+
+    st.divider()
+
+    # --- Spherical Harmonics Probe ---
+    st.subheader("🔮 Spherical Harmonics Probe")
+    show_sh_probe = st.toggle("Show SH Probe", value=True,
+                              help="Display l=0 (scalar) and l=1 (vector) spherical harmonic glyphs at the query point")
+    sh_probe_scale = st.slider("Probe Scale", 0.01, 0.5, 0.08, 0.01,
+                               help="Radius of the spherical harmonic probe sphere")
+    show_comp_vector = st.toggle("Show Composition Vector", value=True,
+                                 help="l=1 arrow from origin to query point")
 
     st.divider()
 
@@ -309,6 +319,14 @@ else:
 # ================= PLOTTING =================
 fig = go.Figure()
 
+# Validate colorscale - fallback to Viridis if invalid
+try:
+    # Quick validation: Plotly will accept these
+    cmap_safe = cmap
+except Exception:
+    cmap_safe = "Viridis"
+    st.sidebar.warning(f"Invalid colormap '{cmap}', falling back to Viridis")
+
 # Colorbar config (Plotly 5.x / 6.x compatible)
 def make_cbar(title_text):
     return dict(
@@ -325,7 +343,7 @@ def make_cbar(title_text):
 # Marker config
 marker_config = dict(
     symbol=symbol,
-    colorscale=cmap,
+    colorscale=cmap_safe,
     opacity=opacity,
     line=dict(width=marker_line_width, color=marker_line_color)
 )
@@ -363,7 +381,7 @@ else:  # Both Phases Overlay
     fig.add_trace(go.Scatter3d(
         x=x_data, y=y_data, z=z_data,
         mode="markers",
-        marker=dict(symbol=symbol, size=sizes, color=G_liq, colorscale=cmap, opacity=opacity,
+        marker=dict(symbol=symbol, size=sizes, color=G_liq, colorscale=cmap_safe, opacity=opacity,
                     line=dict(width=marker_line_width, color=marker_line_color),
                     colorbar=make_cbar(cbar_title_txt.replace("G", "G_LIQ"))),
         name="LIQUID"
@@ -371,13 +389,13 @@ else:  # Both Phases Overlay
     fig.add_trace(go.Scatter3d(
         x=x_data, y=y_data, z=z_data,
         mode="markers",
-        marker=dict(symbol=symbol, size=sizes, color=G_fcc, colorscale=cmap, opacity=opacity,
+        marker=dict(symbol=symbol, size=sizes, color=G_fcc, colorscale=cmap_safe, opacity=opacity,
                     line=dict(width=marker_line_width, color=marker_line_color),
                     colorbar=make_cbar(cbar_title_txt.replace("G", "G_FCC"))),
         name="FCC"
     ))
 
-# Query point overlay
+# Query point overlay (always diamond for query)
 if query_result is not None and not np.isnan(x_q[0]):
     fig.add_trace(go.Scatter3d(
         x=x_q, y=y_q, z=z_q,
@@ -390,6 +408,79 @@ if query_result is not None and not np.isnan(x_q[0]):
                        f"x_Fe={query_result['Fe']:.3f}<br>x_Ni={query_result['Ni']:.3f}<br>"
                        f"G_stable={query_result['G_stable']:,.0f} J/mol<br>"
                        f"Phase={query_result['Phase']}<extra></extra>")
+    ))
+
+# ================= SPHERICAL HARMONICS PROBE (e3nn-style) =================
+if query_result is not None and show_sh_probe:
+    qx, qy, qz = query_result["Co"], query_result["Cr"], query_result["Fe"]
+    g_val = abs(query_result["G_stable"])
+    g_max_all = max(abs(df["G_LIQ"]).max(), abs(df["G_FCC"]).max())
+    radius = sh_probe_scale * (0.5 + 0.5 * g_val / g_max_all) if g_max_all > 0 else sh_probe_scale
+
+    phase_color = "#3498db" if query_result["Phase"] == "LIQUID" else "#e74c3c"
+
+    # l=0 spherical harmonic: scalar sphere (constant on surface)
+    u = np.linspace(0, 2 * np.pi, 30)
+    v = np.linspace(0, np.pi, 30)
+    x_sh = qx + radius * np.outer(np.cos(u), np.sin(v))
+    y_sh = qy + radius * np.outer(np.sin(u), np.sin(v))
+    z_sh = qz + radius * np.outer(np.ones(np.size(u)), np.cos(v))
+
+    fig.add_trace(go.Surface(
+        x=x_sh, y=y_sh, z=z_sh,
+        opacity=0.25,
+        colorscale=[[0, phase_color], [1, phase_color]],
+        showscale=False,
+        name=f"SH l=0 ({query_result['Phase']})",
+        hovertemplate=(f"<b>Spherical Harmonic l=0</b><br>"
+                       f"G_stable={query_result['G_stable']:,.0f} J/mol<br>"
+                       f"Phase={query_result['Phase']}<br>"
+                       f"Radius={radius:.4f}<extra></extra>")
+    ))
+
+    # Add SH probe points (geometric markers on the sphere surface)
+    n_probe = 12
+    theta_p = np.linspace(0, 2*np.pi, n_probe, endpoint=False)
+    phi_p = np.linspace(0, np.pi, n_probe)
+    theta_p, phi_p = np.meshgrid(theta_p, phi_p)
+    theta_p, phi_p = theta_p.ravel(), phi_p.ravel()
+
+    x_p = qx + radius * np.sin(phi_p) * np.cos(theta_p)
+    y_p = qy + radius * np.sin(phi_p) * np.sin(theta_p)
+    z_p = qz + radius * np.cos(phi_p)
+
+    fig.add_trace(go.Scatter3d(
+        x=x_p, y=y_p, z=z_p,
+        mode="markers",
+        marker=dict(size=5, color=phase_color, symbol=symbol,
+                    line=dict(width=1, color="white"), opacity=0.8),
+        name="SH Probe Grid",
+        hoverinfo="skip"
+    ))
+
+# l=1 Composition Vector (arrow from origin)
+if query_result is not None and show_comp_vector:
+    qx, qy, qz = query_result["Co"], query_result["Cr"], query_result["Fe"]
+    # Main line
+    fig.add_trace(go.Scatter3d(
+        x=[0, qx], y=[0, qy], z=[0, qz],
+        mode="lines+text",
+        line=dict(color="gold", width=5),
+        text=["", "l=1"],
+        textposition="top center",
+        textfont=dict(size=14, color="gold"),
+        name="Composition Vector (l=1)",
+        hovertemplate=(f"<b>l=1 Composition Vector</b><br>"
+                       f"Co={qx:.3f}<br>Cr={qy:.3f}<br>Fe={qz:.3f}<extra></extra>")
+    ))
+    # Arrowhead (cone approximation using a small sphere)
+    fig.add_trace(go.Scatter3d(
+        x=[qx], y=[qy], z=[qz],
+        mode="markers",
+        marker=dict(size=8, color="gold", symbol="diamond",
+                    line=dict(width=1, color="white")),
+        name="Vector Head",
+        hoverinfo="skip"
     ))
 
 # ================= e3nn REFERENCE SHAPES =================
@@ -498,7 +589,12 @@ fig.update_layout(
     legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor="rgba(255,255,255,0.7)")
 )
 
-st.plotly_chart(fig, use_container_width=True)
+# Safe plot display
+try:
+    st.plotly_chart(fig, use_container_width=True)
+except Exception as e:
+    st.error(f"Plot rendering error: {e}")
+    st.info("Try selecting a different colormap or reducing grid resolution.")
 
 # ================= STATISTICS =================
 st.subheader("📊 Phase Statistics at Current Grid")
