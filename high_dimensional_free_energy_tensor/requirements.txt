@@ -2,3 +2,5 @@ streamlit
 scipy
 plotly
 matplotlib
+pandas
+torch
