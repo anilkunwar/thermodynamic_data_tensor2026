@@ -271,33 +271,32 @@ else:
 # ================= PLOTTING =================
 fig = go.Figure()
 
-# Colorbar config
-cbar_config = dict(
-    title=cbar_title_txt,
-    thickness=cbar_thickness,
-    len=cbar_len,
-    titlefont=dict(size=cbar_title_size),
-    tickfont=dict(size=cbar_tick_size),
-    xpad=cbar_xpad,
-    ypad=cbar_ypad,
-    outlinecolor="black",
-    outlinewidth=1
-)
+# Colorbar config (Plotly 5.x compatible)
+def make_cbar(title_text):
+    return dict(
+        title=dict(text=title_text, font=dict(size=cbar_title_size)),
+        thickness=cbar_thickness,
+        len=cbar_len,
+        tickfont=dict(size=cbar_tick_size),
+        xpad=cbar_xpad,
+        ypad=cbar_ypad,
+        outlinecolor="black",
+        outlinewidth=1
+    )
 
 # Marker config
 marker_config = dict(
     size=marker_size,
     colorscale=cmap,
     opacity=opacity,
-    line=dict(width=marker_line_width, color=marker_line_color),
-    colorbar=cbar_config
+    line=dict(width=marker_line_width, color=marker_line_color)
 )
 
 if show_phase == "Stable Phase (Min G)":
     fig.add_trace(go.Scatter3d(
         x=x_data, y=y_data, z=z_data,
         mode="markers",
-        marker=dict(**marker_config, color=G_stable),
+        marker=dict(**marker_config, color=G_stable, colorbar=make_cbar(cbar_title_txt)),
         name="Stable Phase",
         hovertemplate=(f"<b>Stable</b><br>{x_title}=%{{x:.3f}}<br>{y_title}=%{{y:.3f}}<br>"
                        f"{z_title}=%{{z:.3f}}<br>G=%{{marker.color:,.0f}} J/mol<br>"
@@ -308,7 +307,7 @@ elif show_phase == "LIQUID Only":
     fig.add_trace(go.Scatter3d(
         x=x_data, y=y_data, z=z_data,
         mode="markers",
-        marker=dict(**marker_config, color=G_liq),
+        marker=dict(**marker_config, color=G_liq, colorbar=make_cbar(cbar_title_txt)),
         name="LIQUID",
         hovertemplate=(f"<b>LIQUID</b><br>{x_title}=%{{x:.3f}}<br>{y_title}=%{{y:.3f}}<br>"
                        f"{z_title}=%{{z:.3f}}<br>G_LIQ=%{{marker.color:,.0f}} J/mol<extra></extra>")
@@ -317,23 +316,18 @@ elif show_phase == "FCC Only":
     fig.add_trace(go.Scatter3d(
         x=x_data, y=y_data, z=z_data,
         mode="markers",
-        marker=dict(**marker_config, color=G_fcc),
+        marker=dict(**marker_config, color=G_fcc, colorbar=make_cbar(cbar_title_txt)),
         name="FCC",
         hovertemplate=(f"<b>FCC</b><br>{x_title}=%{{x:.3f}}<br>{y_title}=%{{y:.3f}}<br>"
                        f"{z_title}=%{{z:.3f}}<br>G_FCC=%{{marker.color:,.0f}} J/mol<extra></extra>")
     ))
 else:  # Both Phases Overlay
-    cbar_liq = cbar_config.copy()
-    cbar_liq["title"] = cbar_title_txt.replace("G", "G_LIQ")
-    cbar_fcc = cbar_config.copy()
-    cbar_fcc["title"] = cbar_title_txt.replace("G", "G_FCC")
-
     fig.add_trace(go.Scatter3d(
         x=x_data, y=y_data, z=z_data,
         mode="markers",
         marker=dict(size=marker_size, color=G_liq, colorscale=cmap, opacity=opacity,
                     line=dict(width=marker_line_width, color=marker_line_color),
-                    colorbar=dict(**cbar_liq, x=0.85)),
+                    colorbar=make_cbar(cbar_title_txt.replace("G", "G_LIQ"))),
         name="LIQUID"
     ))
     fig.add_trace(go.Scatter3d(
@@ -341,7 +335,7 @@ else:  # Both Phases Overlay
         mode="markers",
         marker=dict(size=marker_size, color=G_fcc, colorscale=cmap, opacity=opacity,
                     line=dict(width=marker_line_width, color=marker_line_color),
-                    colorbar=dict(**cbar_fcc, x=1.0)),
+                    colorbar=make_cbar(cbar_title_txt.replace("G", "G_FCC"))),
         name="FCC"
     ))
 
