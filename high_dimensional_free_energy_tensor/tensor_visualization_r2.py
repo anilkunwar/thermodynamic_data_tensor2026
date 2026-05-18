@@ -20,34 +20,26 @@ st.set_page_config(page_title="CoCrFeNi Gibbs Energy Explorer", layout="wide")
 # VALIDATED COLORMAP LIBRARY (Plotly 6.x safe)
 # =============================================
 COLORMAPS = [
-    # Perceptually uniform
     "Viridis", "Plasma", "Inferno", "Magma", "Cividis", "Turbo",
-    # Sequential
     "Blues", "BuGn", "BuPu", "GnBu", "Greens", "Greys", "Oranges", "OrRd",
     "PuBu", "PuBuGn", "PuRd", "Purples", "RdPu", "Reds", "YlGn", "YlGnBu",
     "YlOrBr", "YlOrRd",
-    # Diverging
     "BrBG", "PRGn", "PiYG", "PuOr", "RdBu", "RdGy", "RdYlBu", "RdYlGn", "Spectral",
-    # Cyclical
     "Twilight", "HSV",
-    # Matplotlib / Other
     "Jet", "Rainbow", "Hot", "Cool", "Blackbody", "Electric",
-    # Plotly extended
     "Plotly3", "Portland", "Picnic", "Solar", "Balance", "Delta", "Curl",
     "IceFire", "Edge", "Fall", "Sunset", "Sunsetdark", "Teal", "Tealgrn",
     "Tropic", "Peach", "Oxy", "Mint", "Emrld", "Aggrnyl", "Agsunset",
     "Armyrose", "Bluered", "Blugrn", "Bluyl", "Brwnyl", "Burg", "Burgyl",
     "Darkmint", "Geysr", "Magenta", "Mrybm", "Mygbm", "Oryel", "Pinkyl",
     "Purp", "Purpor", "Redor", "Ylorrd", "Ylorbr", "Ylgnbu", "Ylgn",
-    # Additional e3nn-friendly
     "Haline", "Ice", "Matter", "Speed", "Tempo", "Thermal", "Turbid",
     "Algae", "Deep", "Dense", "Sinebow", "Phase"
 ]
 COLORMAPS = sorted(list(set(COLORMAPS)))
 
-# e3nn-like 3D symbols
-SYMBOLS = ["circle", "diamond", "cross", "x", "star", "square", "pentagon", "hexagon", 
-           "hexagon2", "octagon", "star-diamond", "star-triangle-up", "star-square"]
+# Plotly-validated 3D symbols (must be lowercase, no hyphens)
+SYMBOLS = ["circle", "diamond", "cross", "x", "star", "square", "pentagon", "hexagon"]
 
 # =============================================
 # COORDINATE TRANSFORMATIONS
@@ -319,14 +311,6 @@ else:
 # ================= PLOTTING =================
 fig = go.Figure()
 
-# Validate colorscale - fallback to Viridis if invalid
-try:
-    # Quick validation: Plotly will accept these
-    cmap_safe = cmap
-except Exception:
-    cmap_safe = "Viridis"
-    st.sidebar.warning(f"Invalid colormap '{cmap}', falling back to Viridis")
-
 # Colorbar config (Plotly 5.x / 6.x compatible)
 def make_cbar(title_text):
     return dict(
@@ -340,19 +324,23 @@ def make_cbar(title_text):
         outlinewidth=1
     )
 
-# Marker config
-marker_config = dict(
-    symbol=symbol,
-    colorscale=cmap_safe,
-    opacity=opacity,
-    line=dict(width=marker_line_width, color=marker_line_color)
-)
+# Marker config - safe dict construction
+def make_marker_config(color_data, size_data, cbar_title):
+    return dict(
+        size=size_data,
+        color=color_data,
+        colorscale=cmap,
+        opacity=opacity,
+        symbol=symbol,
+        line=dict(width=marker_line_width, color=marker_line_color),
+        colorbar=make_cbar(cbar_title)
+    )
 
 if show_phase == "Stable Phase (Min G)":
     fig.add_trace(go.Scatter3d(
         x=x_data, y=y_data, z=z_data,
         mode="markers",
-        marker=dict(**marker_config, color=G_stable, size=sizes, colorbar=make_cbar(cbar_title_txt)),
+        marker=make_marker_config(G_stable, sizes, cbar_title_txt),
         name="Stable Phase",
         hovertemplate=(f"<b>Stable</b><br>{x_title}=%{{x:.3f}}<br>{y_title}=%{{y:.3f}}<br>"
                        f"{z_title}=%{{z:.3f}}<br>G=%{{marker.color:,.0f}} J/mol<br>"
@@ -363,7 +351,7 @@ elif show_phase == "LIQUID Only":
     fig.add_trace(go.Scatter3d(
         x=x_data, y=y_data, z=z_data,
         mode="markers",
-        marker=dict(**marker_config, color=G_liq, size=sizes, colorbar=make_cbar(cbar_title_txt)),
+        marker=make_marker_config(G_liq, sizes, cbar_title_txt),
         name="LIQUID",
         hovertemplate=(f"<b>LIQUID</b><br>{x_title}=%{{x:.3f}}<br>{y_title}=%{{y:.3f}}<br>"
                        f"{z_title}=%{{z:.3f}}<br>G_LIQ=%{{marker.color:,.0f}} J/mol<extra></extra>")
@@ -372,7 +360,7 @@ elif show_phase == "FCC Only":
     fig.add_trace(go.Scatter3d(
         x=x_data, y=y_data, z=z_data,
         mode="markers",
-        marker=dict(**marker_config, color=G_fcc, size=sizes, colorbar=make_cbar(cbar_title_txt)),
+        marker=make_marker_config(G_fcc, sizes, cbar_title_txt),
         name="FCC",
         hovertemplate=(f"<b>FCC</b><br>{x_title}=%{{x:.3f}}<br>{y_title}=%{{y:.3f}}<br>"
                        f"{z_title}=%{{z:.3f}}<br>G_FCC=%{{marker.color:,.0f}} J/mol<extra></extra>")
@@ -381,17 +369,13 @@ else:  # Both Phases Overlay
     fig.add_trace(go.Scatter3d(
         x=x_data, y=y_data, z=z_data,
         mode="markers",
-        marker=dict(symbol=symbol, size=sizes, color=G_liq, colorscale=cmap_safe, opacity=opacity,
-                    line=dict(width=marker_line_width, color=marker_line_color),
-                    colorbar=make_cbar(cbar_title_txt.replace("G", "G_LIQ"))),
+        marker=make_marker_config(G_liq, sizes, cbar_title_txt.replace("G", "G_LIQ")),
         name="LIQUID"
     ))
     fig.add_trace(go.Scatter3d(
         x=x_data, y=y_data, z=z_data,
         mode="markers",
-        marker=dict(symbol=symbol, size=sizes, color=G_fcc, colorscale=cmap_safe, opacity=opacity,
-                    line=dict(width=marker_line_width, color=marker_line_color),
-                    colorbar=make_cbar(cbar_title_txt.replace("G", "G_FCC"))),
+        marker=make_marker_config(G_fcc, sizes, cbar_title_txt.replace("G", "G_FCC")),
         name="FCC"
     ))
 
@@ -452,7 +436,7 @@ if query_result is not None and show_sh_probe:
     fig.add_trace(go.Scatter3d(
         x=x_p, y=y_p, z=z_p,
         mode="markers",
-        marker=dict(size=5, color=phase_color, symbol=symbol,
+        marker=dict(size=5, color=phase_color, symbol="circle",
                     line=dict(width=1, color="white"), opacity=0.8),
         name="SH Probe Grid",
         hoverinfo="skip"
@@ -540,8 +524,6 @@ if show_axes_frame:
 
 # 3) Composition Simplex Wireframe (tetrahedron edges)
 if show_simplex:
-    # Vertices of the simplex: (1,0,0), (0,1,0), (0,0,1), (0,0,0)
-    # But Ni is implicit: (0,0,0) means Ni=1
     simplex_edges = [
         [(1,0,0), (0,1,0)], [(1,0,0), (0,0,1)], [(1,0,0), (0,0,0)],
         [(0,1,0), (0,0,1)], [(0,1,0), (0,0,0)], [(0,0,1), (0,0,0)]
