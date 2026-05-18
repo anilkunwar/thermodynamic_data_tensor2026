@@ -354,24 +354,25 @@ if query_result is not None and not np.isnan(x_q[0]):
                        f"Phase={query_result['Phase']}<extra></extra>")
     ))
 
-# Axis styling (Plotly 5.x / 6.x compatible — no titlefont!)
-axis_base = dict(
-    title=dict(font=dict(size=axis_title_font)),
-    tickfont=dict(size=tick_font),
-    showbackground=True,
-    backgroundcolor=bg_color,
-    gridcolor="rgba(128,128,128,0.3)" if show_grid else "rgba(0,0,0,0)",
-    showgrid=show_grid,
-    zerolinecolor="rgba(128,128,128,0.5)" if show_grid else "rgba(0,0,0,0)",
-    zerolinewidth=1 if show_grid else 0
-)
+# Axis styling (Plotly 6.x compatible — build each axis dict explicitly)
+def make_axis(title_text):
+    return dict(
+        title=dict(text=title_text, font=dict(size=axis_title_font)),
+        tickfont=dict(size=tick_font),
+        showbackground=True,
+        backgroundcolor=bg_color,
+        gridcolor="rgba(128,128,128,0.3)" if show_grid else "rgba(0,0,0,0)",
+        showgrid=show_grid,
+        zerolinecolor="rgba(128,128,128,0.5)" if show_grid else "rgba(0,0,0,0)",
+        zerolinewidth=1 if show_grid else 0
+    )
 
 fig.update_layout(
     template=template if template != "none" else None,
     scene=dict(
-        xaxis=dict(title=dict(text=x_title), **axis_base),
-        yaxis=dict(title=dict(text=y_title), **axis_base),
-        zaxis=dict(title=dict(text=z_title), **axis_base),
+        xaxis=make_axis(x_title),
+        yaxis=make_axis(y_title),
+        zaxis=make_axis(z_title),
         aspectmode="cube",
         camera=dict(eye=dict(x=1.5, y=1.5, z=1.2))
     ),
