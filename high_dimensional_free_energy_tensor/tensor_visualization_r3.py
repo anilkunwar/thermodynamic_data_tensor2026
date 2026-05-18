@@ -28,7 +28,7 @@ import plotly.graph_objects as go
 from scipy.interpolate import LinearNDInterpolator
 #from scipy.special import sph_harm
 from scipy.linalg import lstsq
-from scipy.ndimage import gaussian_gradient
+from scipy.ndimage import gaussian_filter
 import warnings
 warnings.filterwarnings('ignore')
 # =============================================
@@ -359,36 +359,41 @@ def compute_gibbs_tensor(df, T_values, comp_grid_res=20):
         'comp_vals': comp_vals
     }
 
+#
 def detect_phase_boundaries(phase_matrix, comp_grid, T_idx, smoothing_sigma=1.0):
     """
-    Detect phase boundaries in composition space using gradient analysis.
-    
-    Returns:
-        boundary_points: Array of [Co, Cr, Fe] coordinates on phase boundary
-        boundary_confidence: Confidence score for each boundary point
+    Detect phase boundaries in composition space using smoothed gradient analysis.
+    Uses scipy.ndimage.gaussian_filter + numpy.gradient (stable & standard).
     """
     Co_grid, Cr_grid, Fe_grid = comp_grid
-    phase_slice = phase_matrix[T_idx]
+    phase_slice = phase_matrix[T_idx].astype(float)
     
-    # Compute spatial gradients of phase indicator
-    grad_co = gaussian_gradient(phase_slice.astype(float), axis=0, sigma=smoothing_sigma)
-    grad_cr = gaussian_gradient(phase_slice.astype(float), axis=1, sigma=smoothing_sigma)
-    grad_fe = gaussian_gradient(phase_slice.astype(float), axis=2, sigma=smoothing_sigma)
+    # 1. Smooth phase field to reduce grid discretization noise
+    phase_smooth = gaussian_filter(phase_slice, sigma=smoothing_sigma)
     
-    # Boundary magnitude (high gradient = likely boundary)
+    # 2. Compute spatial gradients along each composition axis
+    grad_co = np.gradient(phase_smooth, axis=0)
+    grad_cr = np.gradient(phase_smooth, axis=1)
+    grad_fe = np.gradient(phase_smooth, axis=2)
+    
+    # 3. Gradient magnitude (high = likely phase boundary)
     grad_mag = np.sqrt(grad_co**2 + grad_cr**2 + grad_fe**2)
     
-    # Threshold for boundary detection
-    threshold = np.percentile(grad_mag[~np.isnan(grad_mag)], 90)
-    boundary_mask = (grad_mag > threshold) & (~np.isnan(phase_slice))
+    # 4. Adaptive threshold: top 10% of gradient magnitudes
+    valid_mask = ~np.isnan(grad_mag)
+    if not np.any(valid_mask):
+        return np.empty((0, 3)), np.empty(0)
+        
+    threshold = np.percentile(grad_mag[valid_mask], 90)
+    boundary_mask = (grad_mag > threshold) & valid_mask
     
-    # Extract boundary coordinates
-    boundary_co = Co_grid[boundary_mask]
-    boundary_cr = Cr_grid[boundary_mask]
-    boundary_fe = Fe_grid[boundary_mask]
+    # 5. Extract boundary coordinates & confidence scores
+    boundary_points = np.column_stack([
+        Co_grid[boundary_mask],
+        Cr_grid[boundary_mask],
+        Fe_grid[boundary_mask]
+    ])
     boundary_conf = grad_mag[boundary_mask]
-    
-    boundary_points = np.column_stack([boundary_co, boundary_cr, boundary_fe])
     
     return boundary_points, boundary_conf
 
