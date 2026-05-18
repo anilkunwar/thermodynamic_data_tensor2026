@@ -26,11 +26,66 @@ import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
 from scipy.interpolate import LinearNDInterpolator
-from scipy.special import sph_harm
+#from scipy.special import sph_harm
 from scipy.linalg import lstsq
 from scipy.ndimage import gaussian_gradient
 import warnings
 warnings.filterwarnings('ignore')
+# =============================================
+# ROBUST SPHERICAL HARMONICS IMPORT
+# =============================================
+try:
+    from scipy.special import sph_harm
+    SCIPY_SH_AVAILABLE = True
+except (ImportError, AttributeError):
+    SCIPY_SH_AVAILABLE = False
+    st.warning("⚠️ scipy.special.sph_harm not available. Using pure NumPy fallback.")
+    
+    # Pure NumPy implementation of associated Legendre polynomials & spherical harmonics
+    def legendre_p(l, m, x):
+        """Associated Legendre polynomial P_l^m(x) using recurrence."""
+        x = np.clip(x, -1, 1)
+        if m > l:
+            return np.zeros_like(x)
+        # Start with P_m^m
+        pmm = np.ones_like(x)
+        if m > 0:
+            somx2 = np.sqrt((1 - x) * (1 + x))
+            fact = 1.0
+            for i in range(1, m + 1):
+                pmm *= -fact * somx2
+                fact += 2
+        if l == m:
+            return pmm
+        # Recurrence to get P_{m+1}^m
+        pmmp1 = x * (2 * m + 1) * pmm
+        if l == m + 1:
+            return pmmp1
+        # General recurrence for l > m+1
+        pll = np.zeros((l - m + 1, len(x)))
+        pll[0] = pmm
+        pll[1] = pmmp1
+        for ll in range(m + 2, l + 1):
+            pll[ll - m] = ((2 * ll - 1) * x * pll[ll - m - 1] - 
+                          (ll + m - 1) * pll[ll - m - 2]) / (ll - m)
+        return pll[l - m]
+    
+    def sph_harm(m, l, theta, phi):
+        """
+        Pure NumPy spherical harmonic Y_l^m(theta, phi).
+        Convention: theta=azimuth (0→2π), phi=polar (0→π)
+        Returns complex-valued array.
+        """
+        theta = np.asarray(theta)
+        phi = np.asarray(phi)
+        # Normalization factor
+        norm = np.sqrt((2 * l + 1) / (4 * np.pi) * 
+                      np.math.factorial(l - abs(m)) / np.math.factorial(l + abs(m)))
+        # Associated Legendre
+        plm = legendre_p(l, abs(m), np.cos(phi))
+        # Azimuthal phase
+        azimuth = np.exp(1j * m * theta)
+        return norm * plm * azimuth * ((-1) ** m if m >= 0 else 1)
 
 # =============================================
 # PATH & PAGE CONFIGURATION
