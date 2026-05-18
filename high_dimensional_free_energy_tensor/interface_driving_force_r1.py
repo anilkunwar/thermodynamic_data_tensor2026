@@ -124,10 +124,11 @@ with st.sidebar:
     st.caption("Build once; subsequent queries will be instant.")
 
 # Evaluation function (uses built interpolators if available)
+#
 def evaluate_point(x_co, x_cr, x_fe, T):
-    """Get Gibbs energies (J/mol) using pre-built interpolators."""
+    """Return (G_LIQ, G_FCC) as floats, or (None, None) on failure."""
+    # Obtain interpolators (built or on‑the‑fly)
     if not st.session_state.interpolators_built:
-        # Fallback: build on-the-fly (slower but works)
         if USE_REGULAR:
             interp_liq = build_regular_interpolator(T, "LIQ")
             interp_fcc = build_regular_interpolator(T, "FCC")
@@ -145,13 +146,29 @@ def evaluate_point(x_co, x_cr, x_fe, T):
             else:
                 interp_liq = build_linearnd_interpolator(T, "LIQ")
                 interp_fcc = build_linearnd_interpolator(T, "FCC")
-
-    point = np.array([[x_co, x_cr, x_fe]])
-    g_liq = interp_liq(point)
-    g_fcc = interp_fcc(point)
-    if np.isnan(g_liq) or np.isnan(g_fcc):
+    
+    # If interpolators are still None, bail out
+    if interp_liq is None or interp_fcc is None:
         return None, None
-    return float(g_liq), float(g_fcc)
+    
+    point = np.array([[x_co, x_cr, x_fe]])
+    try:
+        g_liq = interp_liq(point)
+        g_fcc = interp_fcc(point)
+    except Exception:
+        return None, None
+    
+    # Convert numpy arrays to scalar (e.g., array(123.4) → 123.4)
+    if hasattr(g_liq, 'item'):
+        g_liq = g_liq.item()
+    if hasattr(g_fcc, 'item'):
+        g_fcc = g_fcc.item()
+    
+    # Validate values
+    if g_liq is None or g_fcc is None or np.isnan(g_liq) or np.isnan(g_fcc):
+        return None, None
+    
+    return g_liq, g_fcc
 
 # ================= HELPER FUNCTIONS =================
 def composition_dependent_vm(x_co, x_cr, x_fe, x_ni):
