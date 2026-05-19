@@ -617,8 +617,8 @@ else:
 fig = go.Figure()
 
 # Colorbar config with optional cmin/cmax
-def make_cbar(title_text, cmin=None, cmax=None):
-    cfg = dict(
+def make_cbar(title_text):
+    return dict(
         title=dict(text=title_text, font=dict(size=cbar_title_size)),
         thickness=cbar_thickness,
         len=cbar_len,
@@ -628,11 +628,6 @@ def make_cbar(title_text, cmin=None, cmax=None):
         outlinecolor="black",
         outlinewidth=1
     )
-    if cmin is not None:
-        cfg["cmin"] = cmin
-    if cmax is not None:
-        cfg["cmax"] = cmax
-    return cfg
 
 def make_marker_config(color_data, size_data, cbar_title, cmin=None, cmax=None):
     cfg = dict(
@@ -642,7 +637,7 @@ def make_marker_config(color_data, size_data, cbar_title, cmin=None, cmax=None):
         opacity=marker_opacity,
         symbol=symbol,
         line=dict(width=marker_line_width, color=marker_line_color),
-        colorbar=make_cbar(cbar_title, cmin, cmax)
+        colorbar=make_cbar(cbar_title)
     )
     if cmin is not None:
         cfg["cmin"] = cmin
@@ -696,7 +691,7 @@ else:  # Both Phases Overlay
                 size=sizes, color=G_liq, colorscale="Reds",
                 opacity=temp_factors["liq_opacity"], symbol="circle",
                 line=dict(width=1, color="darkred"),
-                colorbar=make_cbar("G_LIQ (J/mol)", g_cmin, g_cmax),
+                colorbar=make_cbar("G_LIQ (J/mol)"),
                 cmin=g_cmin, cmax=g_cmax
             ),
             name="LIQUID Shell",
@@ -710,7 +705,7 @@ else:  # Both Phases Overlay
                 size=sizes, color=G_fcc, colorscale="Blues",
                 opacity=temp_factors["fcc_opacity"], symbol="diamond",
                 line=dict(width=1, color="darkblue"),
-                colorbar=make_cbar("G_FCC (J/mol)", g_cmin, g_cmax),
+                colorbar=make_cbar("G_FCC (J/mol)"),
                 cmin=g_cmin, cmax=g_cmax
             ),
             name="FCC Shell",
