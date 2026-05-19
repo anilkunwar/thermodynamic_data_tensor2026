@@ -330,14 +330,22 @@ if show_vertices:
     ))
 
 # --- LAYOUT CONFIGURATION ---
+# FIXED: Use proper font properties for newer Plotly versions
+# titlefont is deprecated; use title_font inside axis title dict
 fig.update_layout(
     scene=dict(
-        xaxis=dict(title='X (Crystal Axis)', backgroundcolor="rgba(0,0,0,0)",
-                   titlefont=dict(family=font_family, size=font_size+2, color=font_color)),
-        yaxis=dict(title='Y (Crystal Axis)', backgroundcolor="rgba(0,0,0,0)",
-                   titlefont=dict(family=font_family, size=font_size+2, color=font_color)),
-        zaxis=dict(title='Z (Crystal Axis)', backgroundcolor="rgba(0,0,0,0)",
-                   titlefont=dict(family=font_family, size=font_size+2, color=font_color)),
+        xaxis=dict(
+            title=dict(text='X (Crystal Axis)', font=dict(family=font_family, size=font_size+2, color=font_color)),
+            backgroundcolor="rgba(0,0,0,0)"
+        ),
+        yaxis=dict(
+            title=dict(text='Y (Crystal Axis)', font=dict(family=font_family, size=font_size+2, color=font_color)),
+            backgroundcolor="rgba(0,0,0,0)"
+        ),
+        zaxis=dict(
+            title=dict(text='Z (Crystal Axis)', font=dict(family=font_family, size=font_size+2, color=font_color)),
+            backgroundcolor="rgba(0,0,0,0)"
+        ),
         aspectmode='cube'
     ),
     margin=dict(l=0, r=0, b=0, t=40),
