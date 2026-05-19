@@ -1,10 +1,9 @@
 """
 CoCrFeNi Gibbs Free Energy Explorer
-Optimized with RegularGridInterpolator + Build Button
+Optimized for Streamlit Cloud deployment
 WITH: Sunburst Charts, Radar Charts, LaTeX Theory Documentation
 PLUS: Grain Size Derived Interfacial Area Density (Sv) & Net Force
-FIXED: Radar chart MPa/Pa normalization, LaTeX rendering
-ADDED: Current State Sunburst (Temperature → Elements → Force in N)
+FIXED: Cloud deployment issues (paths, timeouts, missing data, requirements)
 """
 import os
 import sys
@@ -18,11 +17,12 @@ from scipy.interpolate import RegularGridInterpolator, LinearNDInterpolator
 from pathlib import Path
 
 # =============================================
-# PATH CONFIGURATION
+# PATH CONFIGURATION - Cloud Safe
 # =============================================
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-CSV_FILES_DIR = os.path.join(SCRIPT_DIR, "csv_files")
-os.makedirs(CSV_FILES_DIR, exist_ok=True)
+# Use Path for cross-platform compatibility
+SCRIPT_DIR = Path(__file__).parent.resolve()
+CSV_FILES_DIR = SCRIPT_DIR / "csv_files"
+CSV_FILES_DIR.mkdir(parents=True, exist_ok=True)
 
 st.set_page_config(
     page_title="CoCrFeNi Phase Stability",
@@ -51,27 +51,55 @@ GRAIN_SHAPE_FACTORS = {
 # ================= DATA LOADING =================
 @st.cache_data
 def load_temperature_data(csv_dir):
-    files = sorted(glob.glob(os.path.join(csv_dir, "Gibbs_*.csv")))
+    csv_path = Path(csv_dir)
+    files = sorted(csv_path.glob("Gibbs_*.csv"))
     if not files:
         return None, []
     data = {}
     for f in files:
-        basename = Path(f).stem
+        basename = f.stem
         try:
             T = int(basename.replace("Gibbs_", "").replace("K", ""))
         except ValueError:
             continue
-        df = pd.read_csv(f, usecols=["Co", "Cr", "Fe", "Ni", "G_LIQ", "G_FCC"])
+        try:
+            df = pd.read_csv(f, usecols=["Co", "Cr", "Fe", "Ni", "G_LIQ", "G_FCC"])
+        except (ValueError, FileNotFoundError, pd.errors.EmptyDataError) as e:
+            st.warning(f"Skipping {f.name}: {e}")
+            continue
         df["sum_x"] = df["Co"] + df["Cr"] + df["Fe"] + df["Ni"]
         df = df[np.abs(df["sum_x"] - 1.0) < 1e-6].copy()
+        if len(df) == 0:
+            st.warning(f"Skipping {f.name}: no valid compositions (sum_x ≠ 1)")
+            continue
         data[T] = df
     return data, sorted(data.keys())
 
-data_by_T, temperatures = load_temperature_data(CSV_FILES_DIR)
-if not data_by_T:
-    st.error(f"❌ No valid CSV files in `{CSV_FILES_DIR}`")
+# Load data with graceful error handling
+try:
+    data_by_T, temperatures = load_temperature_data(CSV_FILES_DIR)
+except Exception as e:
+    st.error(f"❌ Error loading data: {e}")
+    data_by_T, temperatures = None, []
+
+if not data_by_T or not temperatures:
+    st.error(f"❌ No valid CSV files found in `{CSV_FILES_DIR}`")
     st.info("💡 Expected format: `Gibbs_1000K.csv`, `Gibbs_1500K.csv`, etc.")
     st.info("💡 Required columns: Co, Cr, Fe, Ni, G_LIQ, G_FCC")
+    st.info("💡 Ensure your `csv_files/` folder is committed to your GitHub repo!")
+
+    # Show what's actually in the directory for debugging
+    try:
+        existing_files = list(CSV_FILES_DIR.glob("*"))
+        if existing_files:
+            st.write("Files found in csv_files/:")
+            for f in existing_files:
+                st.write(f"- {f.name}")
+        else:
+            st.write("Directory is empty.")
+    except Exception:
+        st.write("Cannot read directory contents.")
+
     st.stop()
 
 # ================= CHECK GRID REGULARITY =================
@@ -270,11 +298,11 @@ Volumetric Pressure & $\\Delta G_v = \\Delta G / V_m$ \\\\
 \centering
 \begin{tabular}{l l}
 \toprule
-\textbf{Concept} & \textbf{Formulation} \\
+\textbf{Concept} & \textbf{Formulation} \\\\
 \midrule
-Gibbs Free Energy & $G_{\text{phase}}(x_{\text{Co}},x_{\text{Cr}},x_{\text{Fe}},x_{\text{Ni}},T)$ \\
-Driving Force & $\Delta G = G_{\text{FCC}} - G_{\text{LIQUID}}$ \\
-Volumetric Pressure & $\Delta G_v = \Delta G / V_m$ \\
+Gibbs Free Energy & $G_{\text{phase}}(x_{\text{Co}},x_{\text{Cr}},x_{\text{Fe}},x_{\text{Ni}},T)$ \\\\
+Driving Force & $\Delta G = G_{\text{FCC}} - G_{\text{LIQUID}}$ \\\\
+Volumetric Pressure & $\Delta G_v = \Delta G / V_m$ \\\\
 ...
 \bottomrule
 \end{tabular}
@@ -480,7 +508,7 @@ else:
 
     if area_mode == "Grain Size Derived (Sv x V)" and grain_size_um is not None:
         st.markdown(f"""
-        **Grain Size Method:** $F_{{total}} = \\Delta G_v \\times A_{{total}} = \\Delta G_v \\times S_v \\times V$
+        **Grain Size Method:** $F_{{total}} = \Delta G_v \times A_{{total}} = \Delta G_v \times S_v \times V$
 
         | Parameter | Value | Unit |
         |:---|:---|:---|
@@ -1152,7 +1180,7 @@ st.caption("""
 
 **Data Format**: CSV files with columns [Co, Cr, Fe, Ni, G_LIQ, G_FCC] where Σxᵢ = 1.0  
 **Interpolation**: Regular grid (fast) or Delaunay triangulation (fallback)  
-**Grain Size Method**: $S_v = k/d$; $A_{{total}} = S_v \\times V$; $F_{{total}} = \\Delta G_v \\times A_{{total}}$  
+**Grain Size Method**: $S_v = k/d$; $A_{{total}} = S_v \times V$; $F_{{total}} = \Delta G_v \times A_{{total}}$  
 **Units**: Energy [J/mol], Volume [m³/mol], Pressure [Pa = N/m²], Force [N], Length [m]
 """)
 
@@ -1193,8 +1221,8 @@ if st.sidebar.checkbox("❓ Show Help & Troubleshooting", value=False):
     **Grain Size Method:**
     - $S_v = k/d$ where $d$ is grain size [m] and $k$ is shape factor
     - $k=2$: Spherical grains | $k=3$: Tetrakaidecahedron (metals) | $k=6$: Cubic
-    - $A_{{total}} = S_v \\times V_{{sample}}$
-    - $F_{{total}} = \\Delta G_v \\times A_{{total}}$
+    - $A_{{total}} = S_v \times V_{{sample}}$
+    - $F_{{total}} = \Delta G_v \times A_{{total}}$
     **Export Options:**
     - 📊 Charts: Hover → Camera icon (Plotly native)
     - 📥 Data: Use "Download CSV" buttons
