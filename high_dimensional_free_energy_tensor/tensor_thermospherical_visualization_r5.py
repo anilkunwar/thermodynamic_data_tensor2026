@@ -41,16 +41,12 @@ COLORMAPS = [
 ]
 COLORMAPS = sorted(list(set(COLORMAPS)))
 
-# Plotly-validated 3D symbols (must be lowercase, no hyphens)
 SYMBOLS = ["circle", "diamond", "cross", "x", "star", "square", "pentagon", "hexagon"]
 
 # =============================================
 # VERSION-AWARE SPHERICAL HARMONICS
 # =============================================
 def get_real_sph_harm(l, m, azimuthal, polar):
-    """
-    Computes real spherical harmonics seamlessly across old/new SciPy versions.
-    """
     try:
         import scipy.special as special
         if hasattr(special, 'sph_harm_y'):
@@ -59,7 +55,6 @@ def get_real_sph_harm(l, m, azimuthal, polar):
             Y_complex = special.sph_harm(m, l, azimuthal, polar)
     except ImportError:
         Y_complex = _manual_sph_harm_complex(l, m, azimuthal, polar)
-
     if m > 0:
         return np.sqrt(2) * ((-1)**m) * np.real(Y_complex)
     elif m < 0:
@@ -76,9 +71,7 @@ def get_real_sph_harm(l, m, azimuthal, polar):
 
 
 def _manual_sph_harm_complex(l, m, theta, phi):
-    """Manual complex spherical harmonic computation (fallback)."""
     x = np.cos(phi)
-
     def P_lm(l_val, m_val, x_val):
         if l_val == 0:
             return np.ones_like(x_val)
@@ -101,7 +94,6 @@ def _manual_sph_harm_complex(l, m, theta, phi):
             elif abs(m_val) == 3: return -105 * x_val * (1 - x_val**2)**1.5
             elif abs(m_val) == 4: return 105 * (1 - x_val**2)**2
         return np.zeros_like(x_val)
-
     import math
     N = np.sqrt((2*l + 1) / (4 * np.pi) * math.factorial(l - abs(m)) / math.factorial(l + abs(m)))
     e_imtheta = np.exp(1j * m * theta)
@@ -110,7 +102,6 @@ def _manual_sph_harm_complex(l, m, theta, phi):
 
 
 def cartesian_to_spherical(c1, c2, c3):
-    """Convert composition (Co, Cr, Fe) to spherical base coordinates."""
     r_comp = np.sqrt(c1**2 + c2**2 + c3**2)
     safe_r = np.where(r_comp == 0, 1e-12, r_comp)
     theta = np.arctan2(c2, c1)
@@ -122,29 +113,17 @@ def cartesian_to_spherical(c1, c2, c3):
 # TEMPERATURE-DEPENDENT SCALING FACTORS
 # =============================================
 def get_temp_scaling_factors(T, T_min, T_max):
-    """
-    Compute temperature-dependent scaling factors that highlight shape differences
-    between low-T FCC-stable and high-T LIQUID-stable regimes.
-
-    At low T: FCC is stable -> FCC shape PROMINENT (large, opaque), LIQUID suppressed
-    At high T: LIQUID is stable -> LIQUID shape PROMINENT (large, opaque), FCC suppressed
-    """
     if T_max > T_min:
         T_norm = (T - T_min) / (T_max - T_min)
     else:
         T_norm = 0.5
-
     k = 8.0
     sigmoid = 1.0 / (1.0 + np.exp(-k * (T_norm - 0.5)))
-
     fcc_scale = 1.0 - 0.7 * sigmoid
     liq_scale = 0.3 + 0.7 * sigmoid
-
     fcc_opacity = 0.9 - 0.75 * sigmoid
     liq_opacity = 0.15 + 0.75 * sigmoid
-
     transition_T = (T_min + T_max) / 2.0
-
     return {
         "fcc_scale": float(fcc_scale),
         "liq_scale": float(liq_scale),
@@ -157,7 +136,6 @@ def get_temp_scaling_factors(T, T_min, T_max):
 
 
 def compute_thermo_radius_sigmoid(r_comp, G_phase, G_other, T, alpha=3.0):
-    """SIGMOID-BASED: Differential stability radius."""
     dG = G_other - G_phase
     scale = RG * T
     x = dG / scale
@@ -166,7 +144,6 @@ def compute_thermo_radius_sigmoid(r_comp, G_phase, G_other, T, alpha=3.0):
 
 
 def compute_thermo_radius_linear(r_comp, G_phase, G_other, beta=2.0, dG_max=None):
-    """LINEAR: Direct differential radius offset."""
     dG = G_other - G_phase
     if dG_max is None:
         dG_max = np.max(np.abs(dG))
@@ -176,14 +153,12 @@ def compute_thermo_radius_linear(r_comp, G_phase, G_other, beta=2.0, dG_max=None
 
 
 def compute_thermo_radius_tanh(r_comp, G_phase, G_other, T, alpha=2.0):
-    """TANH-BASED: Smooth differential radius with bounded expansion."""
     dG = G_other - G_phase
     x = dG / (2.0 * RG * T)
     return r_comp * (1.0 + alpha * np.tanh(x))
 
 
 def compute_thermo_radius_exp(r_comp, G, T, clip_range=(-5.0, 5.0)):
-    """EXPONENTIAL: Legacy weak effect."""
     scaled_g = G / (RG * T)
     scaled_g = np.clip(scaled_g, clip_range[0], clip_range[1])
     return r_comp * np.exp(-scaled_g)
@@ -235,11 +210,22 @@ The stable phase is determined by $G_{\text{stable}} = \min(G_{\text{LIQ}}, G_{\
 
 **Temperature-Dependent Visual Scaling**: At **low T**, the **FCC surface is prominent** (large, opaque, blue) 
 while the **LIQUID surface is suppressed** (small, transparent). At **high T**, this reverses — 
-**LIQUID dominates** (large, opaque, red) while **FCC fades** (small, transparent). The transition 
-is smooth and sigmoidal around the midpoint temperature.
+**LIQUID dominates** (large, opaque, red) while **FCC fades** (small, transparent).
 """)
 
-# ================= SIDEBAR =================
+# =============================================
+# SESSION STATE INITIALIZATION
+# =============================================
+T_list = sorted(df["T"].unique())
+T_min = min(T_list)
+T_max = max(T_list)
+
+if "unified_temp" not in st.session_state:
+    st.session_state.unified_temp = T_list[len(T_list)//2] if T_list else 1000
+
+# =============================================
+# SIDEBAR
+# =============================================
 with st.sidebar:
     st.header("🎛️ Control Panel")
 
@@ -249,41 +235,36 @@ with st.sidebar:
     q_cr = st.number_input("x_Cr", 0.0, 1.0, 0.25, 0.01, format="%.2f")
     q_fe = st.number_input("x_Fe", 0.0, 1.0, 0.25, 0.01, format="%.2f")
 
-    T_list = sorted(df["T"].unique())
-    T_min = min(T_list)
-    T_max = max(T_list)
-
     # =============================================
-    # UNIFIED TEMPERATURE CONTROL (Single T for ALL)
+    # UNIFIED TEMPERATURE — CALLBACK-BASED SYNC
     # =============================================
     st.subheader("🌡️ Temperature (Unified)")
 
-    if "unified_temp" not in st.session_state:
-        st.session_state.unified_temp = T_list[len(T_list)//2] if T_list else 1000
+    def on_temp_num_change():
+        st.session_state.unified_temp = st.session_state.temp_num_widget
 
-    temp_num = st.number_input(
+    def on_temp_slider_change():
+        st.session_state.unified_temp = st.session_state.temp_slider_widget
+
+    # Number input — writes to session_state via callback
+    st.number_input(
         "T (K)",
         min_value=T_min,
         max_value=T_max,
         value=st.session_state.unified_temp,
         step=10,
-        key="temp_num_unified"
+        key="temp_num_widget",
+        on_change=on_temp_num_change
     )
 
-    temp_slider = st.select_slider(
+    # Select slider — reads from session_state, writes via callback
+    st.select_slider(
         "T slider (K)",
         options=T_list,
         value=st.session_state.unified_temp,
-        key="temp_slider_unified"
+        key="temp_slider_widget",
+        on_change=on_temp_slider_change
     )
-
-    # Synchronize: whichever changed last wins
-    if temp_num != st.session_state.unified_temp:
-        st.session_state.unified_temp = temp_num
-        st.rerun()
-    elif temp_slider != st.session_state.unified_temp:
-        st.session_state.unified_temp = temp_slider
-        st.rerun()
 
     T_unified = st.session_state.unified_temp
 
@@ -309,21 +290,16 @@ with st.sidebar:
 
     # --- Spherical Harmonics Probe ---
     st.subheader("🔮 Spherical Harmonics Probe")
-    show_sh_probe = st.toggle("Show SH Probe", value=True,
-                              help="Display l=0, l=1, l=2 spherical harmonic glyphs at query point")
-    sh_probe_scale = st.slider("Probe Scale", 0.01, 0.5, 0.08, 0.01,
-                               help="Base radius of the spherical harmonic probe")
-    sh_l_max = st.slider("Max SH Order (l_max)", 0, 4, 2,
-                         help="Maximum spherical harmonic order to compute")
-    show_comp_vector = st.toggle("Show Composition Vector", value=True,
-                                 help="l=1 arrow from origin to query point")
+    show_sh_probe = st.toggle("Show SH Probe", value=True)
+    sh_probe_scale = st.slider("Probe Scale", 0.01, 0.5, 0.08, 0.01)
+    sh_l_max = st.slider("Max SH Order (l_max)", 0, 4, 2)
+    show_comp_vector = st.toggle("Show Composition Vector", value=True)
 
     st.divider()
 
     # --- Global Viz Params ---
     st.subheader("🌡️ Visualization Parameters")
-    grid_res = st.slider("Grid Resolution", 15, 100, 30, step=5,
-                         help="Higher = finer detail but slower rendering.")
+    grid_res = st.slider("Grid Resolution", 15, 100, 30, step=5)
 
     st.divider()
 
@@ -331,8 +307,7 @@ with st.sidebar:
     st.subheader("🌐 Coordinate System")
     coord_sys = st.radio("Select", 
                          ["Cartesian (x_Co, x_Cr, x_Fe)", "Thermo-Spherical (R, θ, φ)"],
-                         index=0,
-                         help="Thermo-Spherical: R is differential stability radius")
+                         index=0)
 
     st.divider()
 
@@ -340,21 +315,16 @@ with st.sidebar:
     st.subheader("🔥 Thermo-Radius Scaling")
     scaling_method = st.radio("Method",
                               ["Sigmoid (Recommended)", "Linear", "Tanh", "Exp (Legacy — Weak)"],
-                              index=0,
-                              help="How to map ΔG = G_other - G_phase into radial distortion")
+                              index=0)
 
     if scaling_method == "Sigmoid (Recommended)":
-        alpha_sigmoid = st.slider("Expansion Factor α", 0.5, 10.0, 3.0, 0.5,
-                                  help="Max expansion: R_max = r_comp * (1 + α)")
+        alpha_sigmoid = st.slider("Expansion Factor α", 0.5, 10.0, 3.0, 0.5)
     elif scaling_method == "Linear":
-        beta_linear = st.slider("Offset Amplitude β", 0.1, 5.0, 2.0, 0.1,
-                                help="Direct radial offset in composition units")
+        beta_linear = st.slider("Offset Amplitude β", 0.1, 5.0, 2.0, 0.1)
     elif scaling_method == "Tanh":
-        alpha_tanh = st.slider("Expansion Factor α", 0.5, 5.0, 2.0, 0.5,
-                               help="Max expansion: R_max = r_comp * (1 + α)")
+        alpha_tanh = st.slider("Expansion Factor α", 0.5, 5.0, 2.0, 0.5)
     else:
-        clip_exp = st.slider("Clip Range", 1.0, 20.0, 5.0, 1.0,
-                             help="Clip |G/RT| to prevent explosion")
+        clip_exp = st.slider("Clip Range", 1.0, 20.0, 5.0, 1.0)
 
     st.divider()
 
@@ -377,18 +347,50 @@ with st.sidebar:
     # e3nn-style shapes
     st.subheader("🔷 Geometric Shapes")
     symbol = st.selectbox("Marker Symbol", SYMBOLS, index=1)
-    scale_size_by_g = st.toggle("Scale size by |G|", value=False,
-                                help="Tensor-glyph style: marker size ∝ |G|")
+    scale_size_by_g = st.toggle("Scale size by |G|", value=False)
 
-    show_ref_sphere = st.toggle("Show Reference Sphere", value=False,
-                                help="Wireframe sphere at max composition radius")
+    show_ref_sphere = st.toggle("Show Reference Sphere", value=False)
     ref_sphere_r = st.slider("Sphere Radius", 0.1, 1.5, 1.0, 0.05) if show_ref_sphere else 1.0
 
-    show_axes_frame = st.toggle("Show Coordinate Axes", value=False,
-                                help="Coordinate frame arrows at origin")
+    show_axes_frame = st.toggle("Show Coordinate Axes", value=False)
+    show_simplex = st.toggle("Show Composition Simplex", value=False)
 
-    show_simplex = st.toggle("Show Composition Simplex", value=False,
-                           help="Wireframe of the Co-Cr-Fe-Ni tetrahedron boundary")
+    st.divider()
+
+    # =============================================
+    # COLORBAR MAX VALUE CONTROL
+    # =============================================
+    st.subheader("📊 Colorbar Range")
+
+    # Compute global G range for context
+    g_global_min = min(df["G_LIQ"].min(), df["G_FCC"].min())
+    g_global_max = max(df["G_LIQ"].max(), df["G_FCC"].max())
+    g_range = g_global_max - g_global_min
+
+    use_custom_cbar = st.toggle("Set Custom Colorbar Max", value=False,
+                                 help="Override automatic colorbar scaling with a fixed max value")
+
+    if use_custom_cbar:
+        cbar_max = st.number_input(
+            "Colorbar Max (J/mol)",
+            min_value=float(g_global_min),
+            max_value=float(g_global_max * 2),
+            value=float(g_global_max),
+            step=float(abs(g_range) / 100),
+            format="%.0f",
+            help=f"Auto range: [{g_global_min:,.0f}, {g_global_max:,.0f}] J/mol"
+        )
+        cbar_min = st.number_input(
+            "Colorbar Min (J/mol)",
+            min_value=float(g_global_min * 2),
+            max_value=float(g_global_max),
+            value=float(g_global_min),
+            step=float(abs(g_range) / 100),
+            format="%.0f"
+        )
+    else:
+        cbar_max = None
+        cbar_min = None
 
     st.divider()
 
@@ -517,7 +519,6 @@ else:
     R_liq = compute_thermo_radius_exp(r_comp, G_liq, T_unified, clip_range=(-clip_exp, clip_exp))
     R_fcc = compute_thermo_radius_exp(r_comp, G_fcc, T_unified, clip_range=(-clip_exp, clip_exp))
 
-# Apply temperature-dependent visual scaling
 R_liq_vis = R_liq * temp_factors["liq_scale"]
 R_fcc_vis = R_fcc * temp_factors["fcc_scale"]
 R_stable_vis = np.where(G_liq <= G_fcc, R_liq_vis, R_fcc_vis)
@@ -615,8 +616,9 @@ else:
 # ================= PLOTTING =================
 fig = go.Figure()
 
-def make_cbar(title_text):
-    return dict(
+# Colorbar config with optional cmin/cmax
+def make_cbar(title_text, cmin=None, cmax=None):
+    cfg = dict(
         title=dict(text=title_text, font=dict(size=cbar_title_size)),
         thickness=cbar_thickness,
         len=cbar_len,
@@ -626,23 +628,41 @@ def make_cbar(title_text):
         outlinecolor="black",
         outlinewidth=1
     )
+    if cmin is not None:
+        cfg["cmin"] = cmin
+    if cmax is not None:
+        cfg["cmax"] = cmax
+    return cfg
 
-def make_marker_config(color_data, size_data, cbar_title):
-    return dict(
+def make_marker_config(color_data, size_data, cbar_title, cmin=None, cmax=None):
+    cfg = dict(
         size=size_data,
         color=color_data,
         colorscale=cmap,
         opacity=marker_opacity,
         symbol=symbol,
         line=dict(width=marker_line_width, color=marker_line_color),
-        colorbar=make_cbar(cbar_title)
+        colorbar=make_cbar(cbar_title, cmin, cmax)
     )
+    if cmin is not None:
+        cfg["cmin"] = cmin
+    if cmax is not None:
+        cfg["cmax"] = cmax
+    return cfg
+
+# Determine colorbar range
+if use_custom_cbar and cbar_max is not None and cbar_min is not None:
+    g_cmin = cbar_min
+    g_cmax = cbar_max
+else:
+    g_cmin = None
+    g_cmax = None
 
 if show_phase == "Stable Phase (Min G)":
     fig.add_trace(go.Scatter3d(
         x=x_data, y=y_data, z=z_data,
         mode="markers",
-        marker=make_marker_config(color_data, sizes, cbar_title),
+        marker=make_marker_config(color_data, sizes, cbar_title, g_cmin, g_cmax),
         name="Stable Phase",
         hovertemplate=(f"<b>Stable</b><br>{x_title}=%{{x:.4f}}<br>{y_title}=%{{y:.4f}}<br>"
                        f"{z_title}=%{{z:.4f}}<br>G=%{{marker.color:,.0f}} J/mol<br>"
@@ -653,7 +673,7 @@ elif show_phase == "LIQUID Only":
     fig.add_trace(go.Scatter3d(
         x=x_data, y=y_data, z=z_data,
         mode="markers",
-        marker=make_marker_config(color_data, sizes, cbar_title),
+        marker=make_marker_config(color_data, sizes, cbar_title, g_cmin, g_cmax),
         name="LIQUID",
         hovertemplate=(f"<b>LIQUID</b><br>{x_title}=%{{x:.4f}}<br>{y_title}=%{{y:.4f}}<br>"
                        f"{z_title}=%{{z:.4f}}<br>G_LIQ=%{{marker.color:,.0f}} J/mol<extra></extra>")
@@ -662,7 +682,7 @@ elif show_phase == "FCC Only":
     fig.add_trace(go.Scatter3d(
         x=x_data, y=y_data, z=z_data,
         mode="markers",
-        marker=make_marker_config(color_data, sizes, cbar_title),
+        marker=make_marker_config(color_data, sizes, cbar_title, g_cmin, g_cmax),
         name="FCC",
         hovertemplate=(f"<b>FCC</b><br>{x_title}=%{{x:.4f}}<br>{y_title}=%{{y:.4f}}<br>"
                        f"{z_title}=%{{z:.4f}}<br>G_FCC=%{{marker.color:,.0f}} J/mol<extra></extra>")
@@ -676,7 +696,8 @@ else:  # Both Phases Overlay
                 size=sizes, color=G_liq, colorscale="Reds",
                 opacity=temp_factors["liq_opacity"], symbol="circle",
                 line=dict(width=1, color="darkred"),
-                colorbar=make_cbar("G_LIQ (J/mol)")
+                colorbar=make_cbar("G_LIQ (J/mol)", g_cmin, g_cmax),
+                cmin=g_cmin, cmax=g_cmax
             ),
             name="LIQUID Shell",
             hovertemplate=(f"<b>LIQUID</b><br>R_thermo=%{{x:.4f}}<br>θ=%{{y:.4f}}<br>"
@@ -689,7 +710,8 @@ else:  # Both Phases Overlay
                 size=sizes, color=G_fcc, colorscale="Blues",
                 opacity=temp_factors["fcc_opacity"], symbol="diamond",
                 line=dict(width=1, color="darkblue"),
-                colorbar=make_cbar("G_FCC (J/mol)")
+                colorbar=make_cbar("G_FCC (J/mol)", g_cmin, g_cmax),
+                cmin=g_cmin, cmax=g_cmax
             ),
             name="FCC Shell",
             hovertemplate=(f"<b>FCC</b><br>R_thermo=%{{x:.4f}}<br>θ=%{{y:.4f}}<br>"
@@ -702,7 +724,8 @@ else:  # Both Phases Overlay
             marker=dict(
                 size=sizes, color=G_liq, colorscale="Reds",
                 opacity=temp_factors["liq_opacity"], symbol="circle",
-                line=dict(width=1, color="darkred")
+                line=dict(width=1, color="darkred"),
+                cmin=g_cmin, cmax=g_cmax
             ),
             name="LIQUID"
         ))
@@ -712,7 +735,8 @@ else:  # Both Phases Overlay
             marker=dict(
                 size=sizes, color=G_fcc, colorscale="Blues",
                 opacity=temp_factors["fcc_opacity"], symbol="diamond",
-                line=dict(width=1, color="darkblue")
+                line=dict(width=1, color="darkblue"),
+                cmin=g_cmin, cmax=g_cmax
             ),
             name="FCC"
         ))
@@ -733,7 +757,7 @@ if query_result is not None and not np.isnan(x_q[0]):
     ))
 
 # =============================================
-# SPHERICAL HARMONICS PROBE — WITH SURFACE OPACITY
+# SPHERICAL HARMONICS PROBE
 # =============================================
 if query_result is not None and show_sh_probe:
     qx, qy, qz = query_result["Co"], query_result["Cr"], query_result["Fe"]
