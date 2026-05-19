@@ -1,3 +1,4 @@
+
 import os
 import glob
 import numpy as np
@@ -78,6 +79,48 @@ def load_all_data(csv_dir=CSV_FILES_DIR):
 
 df = load_all_data()
 
+# ================= GLOBAL TEMPERATURE STATISTICS =================
+# Compute global statistics across all temperatures for consistent normalization
+T_list = sorted(df["T"].unique())
+T_min = min(T_list)
+T_max = max(T_list)
+T_range = T_max - T_min if T_max > T_min else 1.0
+
+# Global G ranges for consistent color scaling across temperatures
+G_LIQ_global_min = df["G_LIQ"].min()
+G_LIQ_global_max = df["G_LIQ"].max()
+G_FCC_global_min = df["G_FCC"].min()
+G_FCC_global_max = df["G_FCC"].max()
+G_global_min = min(G_LIQ_global_min, G_FCC_global_min)
+G_global_max = max(G_LIQ_global_max, G_FCC_global_max)
+
+# Global ΔG = G_LIQ - G_FCC statistics
+df["dG"] = df["G_LIQ"] - df["G_FCC"]
+dG_global_min = df["dG"].min()
+dG_global_max = df["dG"].max()
+dG_global_abs_max = max(abs(dG_global_min), abs(dG_global_max))
+
+# Temperature-dependent phase statistics (for verification)
+@st.cache_data
+def compute_phase_statistics(df):
+    """Compute LIQUID fraction and average |dG| per temperature."""
+    stats = []
+    for T in sorted(df["T"].unique()):
+        df_T = df[df["T"] == T]
+        liq_count = (df_T["dG"] <= 0).sum()
+        total = len(df_T)
+        liq_fraction = liq_count / total * 100 if total > 0 else 0
+        avg_abs_dG = df_T["dG"].abs().mean()
+        stats.append({
+            "T": T,
+            "LIQUID_fraction_%": liq_fraction,
+            "avg_abs_dG_J_mol": avg_abs_dG,
+            "total_points": total
+        })
+    return pd.DataFrame(stats)
+
+phase_stats_df = compute_phase_statistics(df)
+
 # ================= INTERPOLATION =================
 @st.cache_data(ttl=3600)
 def build_interpolators_for_T(df, T):
@@ -101,27 +144,23 @@ if SCIPY_AVAILABLE:
         """
         # Try modern sph_harm_y first (SciPy >= 1.17)
         if hasattr(special, 'sph_harm_y'):
-            # sph_harm_y(l, m, phi, theta) -> note: phi is polar, theta is azimuthal
             Y_complex = special.sph_harm_y(l, m, phi, theta)
         else:
-            # Fallback to deprecated sph_harm (old order: m, l, theta, phi)
             Y_complex = special.sph_harm(m, l, theta, phi)
-        
-        # Convert to real harmonics (standard definition)
+
         if m > 0:
             return np.sqrt(2.0) * Y_complex.real
         elif m < 0:
-            # For negative m, use the imaginary part of Y_l^{|m|}
             if hasattr(special, 'sph_harm_y'):
                 Y_pos = special.sph_harm_y(l, abs(m), phi, theta)
             else:
                 Y_pos = special.sph_harm(abs(m), l, theta, phi)
             return np.sqrt(2.0) * Y_pos.imag
-        else:  # m == 0
+        else:
             return Y_complex.real
 
     def sample_g_on_sphere(interp_liq, interp_fcc, R_fixed, n_theta=50, n_phi=50):
-        """Evaluate stable G on a sphere of fixed radius R_fixed."""
+        """Evaluate stable G and dG on a sphere of fixed radius."""
         theta = np.linspace(0, 2*np.pi, n_theta)
         phi = np.linspace(0, np.pi, n_phi)
         TH, PH = np.meshgrid(theta, phi)
@@ -136,9 +175,10 @@ if SCIPY_AVAILABLE:
         G_liq = interp_liq(pts) if interp_liq is not None else np.full(len(pts), np.nan)
         G_fcc = interp_fcc(pts) if interp_fcc is not None else np.full(len(pts), np.nan)
         G_stable = np.where(G_liq <= G_fcc, G_liq, G_fcc)
+        dG = G_liq - G_fcc  # Negative = LIQUID stable, Positive = FCC stable
 
         valid = valid & ~np.isnan(G_stable)
-        return TH, PH, G_stable.reshape(TH.shape), valid.reshape(TH.shape)
+        return TH, PH, G_stable.reshape(TH.shape), dG.reshape(TH.shape), valid.reshape(TH.shape)
 
     @st.cache_data(ttl=3600)
     def fit_sh_coeffs(theta_vals, phi_vals, g_vals, l_max=2):
@@ -195,7 +235,6 @@ with st.sidebar:
     q_cr = st.number_input("x_Cr", 0.0, 1.0, 0.25, 0.01, format="%.2f")
     q_fe = st.number_input("x_Fe", 0.0, 1.0, 0.25, 0.01, format="%.2f")
 
-    T_list = sorted(df["T"].unique())
     q_t = st.selectbox("Query T (K)", T_list, index=len(T_list)//2 if T_list else 0)
 
     comp_sum = q_co + q_cr + q_fe
@@ -238,26 +277,75 @@ with st.sidebar:
     # --- Visualization Mode: Markers vs Spherical Harmonic Surface ---
     st.subheader("🎨 Rendering Mode")
     if not SCIPY_AVAILABLE:
-        st.error("⚠️ `scipy` not installed. Spherical Harmonic Surface mode is disabled. Please install scipy (`pip install scipy`) to use it.")
+        st.error("⚠️ `scipy` not installed. Spherical Harmonic Surface mode is disabled.")
         render_mode = "Markers (point cloud)"
         sh_disabled = True
     else:
         render_mode = st.radio("Visualization",
                                ["Markers (point cloud)", "Spherical Harmonic Surface (SH)"],
-                               index=0,
+                               index=1,  # Default to SH mode now that it's improved
                                help="SH surface shows continuous angular variation of G with temperature‑dependent deformation")
         sh_disabled = False
 
     if render_mode == "Spherical Harmonic Surface (SH)" and not sh_disabled:
         st.subheader("🔧 Spherical Harmonic Parameters")
-        sh_l_max = st.slider("Max harmonic degree l", 0, 4, 2,
-                             help="Higher l captures more anisotropy (FCC needs l=4)")
-        sh_alpha = st.slider("Radial distortion strength", 0.0, 0.8, 0.2,
-                             help="How much G variation expands/contracts the sphere")
-        sh_R_fixed = st.slider("Base sphere radius", 0.2, 0.9, 0.5,
-                               help="Nominal radius before distortion")
+
+        # Temperature-dependent distortion controls
+        st.markdown("**🌡️ Temperature Effects**")
+
+        # Auto-compute temperature factor (0 = coldest, 1 = hottest)
+        T_factor = (T_val - T_min) / T_range if T_range > 0 else 0.5
+
+        # Temperature-dependent base radius (thermal expansion)
+        # Low T: smaller radius (contracted, solid-like)
+        # High T: larger radius (expanded, liquid-like)
+        sh_R_fixed = st.slider("Base sphere radius", 0.2, 0.9, 
+                               float(0.35 + 0.25 * T_factor),  # Default based on T
+                               help="Nominal radius before distortion. Auto-adjusts with temperature (thermal expansion effect)")
+
+        # Temperature-dependent distortion strength
+        # Low T: crystalline, sharp features (lower alpha)
+        # High T: fluid, smooth features (higher alpha)
+        sh_alpha = st.slider("Radial distortion strength", 0.0, 0.8, 
+                             float(0.1 + 0.4 * T_factor),  # Default based on T
+                             help="How much G variation expands/contracts the sphere. Higher at high T (fluid-like)")
+
+        # Temperature-dependent harmonic degree
+        # Low T: need higher l to capture crystalline anisotropy
+        # High T: lower l is sufficient for smooth liquid surface
+        sh_l_max = st.slider("Max harmonic degree l", 0, 6, 
+                             int(4 - 2 * T_factor),  # Default: high l at low T, low l at high T
+                             help="Higher l captures more anisotropy (crystalline). Lower l for smooth (liquid-like)")
+
         sh_n_theta = st.slider("Theta resolution", 20, 120, 60, step=10)
         sh_n_phi   = st.slider("Phi resolution", 20, 120, 60, step=10)
+
+        # Surface coloring mode
+        st.markdown("**🎨 Surface Coloring**")
+        surface_color_mode = st.radio("Color by",
+                                      ["Stable G (global scale)", 
+                                       "ΔG = G_LIQ - G_FCC (phase indicator)",
+                                       "Temperature-encoded"],
+                                      index=1,
+                                      help="ΔG mode: blue=FCC stable, red=LIQUID stable")
+
+        # Colormap selection based on mode
+        if surface_color_mode == "ΔG = G_LIQ - G_FCC (phase indicator)":
+            cmap_sh = st.selectbox("Colormap", ["RdBu_r", "RdYlBu", "Spectral", "Balance", "Curl"], index=0,
+                                   help="Diverging colormap: red=LIQUID, blue=FCC")
+        elif surface_color_mode == "Temperature-encoded":
+            cmap_sh = st.selectbox("Colormap", ["Hot", "Thermal", "Inferno", "Magma"], index=0,
+                                   help="Sequential colormap showing temperature intensity")
+        else:
+            cmap_sh = st.selectbox("Colormap", COLORMAPS, index=COLORMAPS.index("Viridis") if "Viridis" in COLORMAPS else 0)
+
+        # Temperature comparison mode
+        st.markdown("**📊 Multi-Temperature Comparison**")
+        show_T_ghost = st.toggle("Show ghost surfaces at T±ΔT", value=False,
+                                 help="Display semi-transparent surfaces at neighboring temperatures")
+        if show_T_ghost:
+            T_delta = st.slider("Temperature offset (K)", 50, 500, 200, 50)
+            ghost_opacity = st.slider("Ghost opacity", 0.1, 0.5, 0.2, 0.05)
 
     # --- Marker-specific options (shown only if marker mode selected) ---
     if render_mode == "Markers (point cloud)":
@@ -313,7 +401,14 @@ with st.sidebar:
     cbar_ypad = col2.slider("Y Pad (px)", 0, 50, 10)
 
     st.divider()
-    st.caption(f"Loaded: {len(T_list)} temperatures | {len(df):,} total rows")
+    st.caption(f"Loaded: {len(T_list)} temperatures ({T_min}-{T_max}K) | {len(df):,} total rows")
+
+    # Show phase statistics
+    with st.expander("📊 Phase Statistics by Temperature"):
+        st.dataframe(phase_stats_df.style.format({
+            "LIQUID_fraction_%": "{:.1f}",
+            "avg_abs_dG_J_mol": "{:.0f}"
+        }), use_container_width=True)
 
 # ================= QUERY EVALUATION =================
 query_result = None
@@ -332,11 +427,13 @@ if eval_query:
             else:
                 g_stable_q = min(g_liq_q, g_fcc_q)
                 phase_q = "LIQUID" if g_liq_q <= g_fcc_q else "FCC"
+                dG_q = g_liq_q - g_fcc_q
                 query_result = {
                     "T": q_t, "Co": q_co, "Cr": q_cr, "Fe": q_fe,
                     "Ni": 1.0 - q_co - q_cr - q_fe,
                     "G_LIQ": g_liq_q, "G_FCC": g_fcc_q,
-                    "G_stable": g_stable_q, "Phase": phase_q
+                    "G_stable": g_stable_q, "Phase": phase_q,
+                    "dG": dG_q
                 }
         else:
             st.error(f"No interpolator available for T = {q_t} K.")
@@ -344,12 +441,21 @@ if eval_query:
 # ================= DISPLAY QUERY RESULTS =================
 if query_result:
     st.success(f"✅ Query Result at T = {query_result['T']} K")
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     c1.metric("G_LIQ", f"{query_result['G_LIQ']:,.0f}", "J/mol")
     c2.metric("G_FCC", f"{query_result['G_FCC']:,.0f}", "J/mol")
     c3.metric("G_stable", f"{query_result['G_stable']:,.0f}", "J/mol")
-    c4.metric("Stable Phase", query_result['Phase'])
-    c5.metric("x_Ni", f"{query_result['Ni']:.3f}")
+    c4.metric("ΔG", f"{query_result['dG']:,.0f}", "J/mol")
+    c5.metric("Stable Phase", query_result['Phase'])
+    c6.metric("x_Ni", f"{query_result['Ni']:.3f}")
+
+    # Temperature context
+    T_factor_q = (query_result['T'] - T_min) / T_range if T_range > 0 else 0.5
+    if query_result['Phase'] == "LIQUID":
+        st.info(f"🔥 High-temperature phase (LIQUID). T-factor: {T_factor_q:.2f}")
+    else:
+        st.info(f"❄️ Low-temperature phase (FCC). T-factor: {T_factor_q:.2f}")
+
     if T_val != query_result['T']:
         st.info(f"ℹ️ The 3D field is rendered at T = {T_val} K; query values are for T = {query_result['T']} K.")
     st.divider()
@@ -363,61 +469,163 @@ if interp_liq is None:
 
 fig = go.Figure()
 
+# Compute temperature factor for this rendering
+T_factor = (T_val - T_min) / T_range if T_range > 0 else 0.5
+
 # ------------------------------------------------------------------
 # MODE 1: SPHERICAL HARMONIC SURFACE (only if scipy available)
 # ------------------------------------------------------------------
 if render_mode == "Spherical Harmonic Surface (SH)" and SCIPY_AVAILABLE:
-    # Sample the stable G on a sphere of fixed radius
-    TH, PH, G_vals, valid_mask = sample_g_on_sphere(interp_liq, interp_fcc,
-                                                    sh_R_fixed,
-                                                    n_theta=sh_n_theta,
-                                                    n_phi=sh_n_phi)
-    if not np.any(valid_mask):
-        st.warning("No valid points on sphere for the chosen radius. Try a smaller base radius.")
-    else:
+
+    def render_sh_surface(T_render, opacity=0.9, is_ghost=False, ghost_label=""):
+        """Render SH surface for a given temperature with temperature-dependent styling."""
+        interp_liq_T, interp_fcc_T = build_interpolators_for_T(df, T_render)
+        if interp_liq_T is None:
+            return False
+
+        TH, PH, G_vals, dG_vals, valid_mask = sample_g_on_sphere(
+            interp_liq_T, interp_fcc_T, sh_R_fixed,
+            n_theta=sh_n_theta, n_phi=sh_n_phi
+        )
+
+        if not np.any(valid_mask):
+            return False
+
         # Fit spherical harmonic coefficients
         coeffs, l_max_used = fit_sh_coeffs(TH, PH, G_vals, l_max=sh_l_max)
-        if coeffs is not None:
-            # Reconstruct smooth G field (interpolates over whole sphere)
-            G_smooth = reconstruct_sh_surface(TH, PH, coeffs, l_max_used)
-            # Deform radius
-            G_min = G_smooth.min()
-            G_max = G_smooth.max()
-            if G_max > G_min:
-                radius = sh_R_fixed + sh_alpha * (G_smooth - G_min) / (G_max - G_min)
-            else:
-                radius = np.full_like(G_smooth, sh_R_fixed)
+        if coeffs is None:
+            return False
 
-            # Convert to Cartesian
-            X = radius * np.sin(PH) * np.cos(TH)
-            Y = radius * np.sin(PH) * np.sin(TH)
-            Z = radius * np.cos(PH)
+        # Reconstruct smooth G field
+        G_smooth = reconstruct_sh_surface(TH, PH, coeffs, l_max_used)
 
-            # Colormap for surface color (G values)
-            cmap_sh = st.session_state.get("cmap_sh", "Viridis")
-            fig.add_trace(go.Surface(
-                x=X, y=Y, z=Z,
-                surfacecolor=G_smooth,
-                colorscale=cmap_sh,
-                opacity=0.9,
-                name=f'SH surface (T={T_val}K)',
-                colorbar=dict(
-                    title=dict(text=cbar_title_txt, font=dict(size=cbar_title_size)),
-                    thickness=cbar_thickness,
-                    len=cbar_len,
-                    tickfont=dict(size=cbar_tick_size),
-                    xpad=cbar_xpad,
-                    ypad=cbar_ypad
-                ),
-                hovertemplate=(
-                    f"<b>Spherical Harmonic Surface</b><br>"
-                    f"G = %{{surfacecolor:,.0f}} J/mol<br>"
-                    f"T = {T_val} K<br>"
-                    f"<extra></extra>"
-                )
-            ))
+        # Temperature-dependent deformation:
+        # Low T: crystalline, sharp features → use higher frequency components
+        # High T: fluid, smooth → stronger radial distortion
+        T_local_factor = (T_render - T_min) / T_range if T_range > 0 else 0.5
+
+        # Base distortion from user slider (already T-dependent default)
+        # Add temperature-modulated component
+        alpha_effective = sh_alpha * (1.0 + 0.5 * np.sin(np.pi * T_local_factor))
+
+        # Normalize G for deformation
+        G_min = G_smooth.min()
+        G_max = G_smooth.max()
+        if G_max > G_min:
+            G_norm = (G_smooth - G_min) / (G_max - G_min)
         else:
-            st.warning("Spherical harmonic fitting failed (no valid points).")
+            G_norm = np.zeros_like(G_smooth)
+
+        # Apply temperature-dependent deformation:
+        # Low T: smaller distortion, more "rigid"
+        # High T: larger distortion, more "fluid"
+        radius = sh_R_fixed + alpha_effective * G_norm
+
+        # Thermal expansion: higher T = larger base radius
+        thermal_expansion = 1.0 + 0.1 * T_local_factor
+        radius *= thermal_expansion
+
+        # Convert to Cartesian
+        X = radius * np.sin(PH) * np.cos(TH)
+        Y = radius * np.sin(PH) * np.sin(TH)
+        Z = radius * np.cos(PH)
+
+        # Determine surface color based on mode
+        if surface_color_mode == "ΔG = G_LIQ - G_FCC (phase indicator)":
+            # Fit dG surface for phase coloring
+            coeffs_dG, _ = fit_sh_coeffs(TH, PH, dG_vals, l_max=sh_l_max)
+            if coeffs_dG is not None:
+                surfacecolor = reconstruct_sh_surface(TH, PH, coeffs_dG, l_max_used)
+                # Clamp to global range for consistent colors across T
+                surfacecolor = np.clip(surfacecolor, -dG_global_abs_max, dG_global_abs_max)
+                cbar_title = "ΔG = G_LIQ - G_FCC (J/mol)"
+                # Center color scale at 0
+                cmin = -dG_global_abs_max
+                cmax = dG_global_abs_max
+            else:
+                surfacecolor = G_smooth
+                cbar_title = cbar_title_txt
+                cmin = G_global_min
+                cmax = G_global_max
+        elif surface_color_mode == "Temperature-encoded":
+            # Encode temperature directly on surface
+            surfacecolor = np.full_like(G_smooth, T_render)
+            cbar_title = "Temperature (K)"
+            cmin = T_min
+            cmax = T_max
+        else:  # Stable G (global scale)
+            surfacecolor = G_smooth
+            cbar_title = cbar_title_txt
+            cmin = G_global_min
+            cmax = G_global_max
+
+        # Surface styling based on temperature
+        if is_ghost:
+            surface_name = f"T={T_render}K {ghost_label}"
+            surface_opacity = ghost_opacity
+            show_scale = False
+        else:
+            surface_name = f"SH surface (T={T_render}K)"
+            surface_opacity = opacity
+            show_scale = True
+
+        # Temperature-dependent surface properties
+        # Low T: more metallic/reflective (solid)
+        # High T: more diffuse/transparent (liquid)
+        if T_local_factor < 0.3:
+            surface_roughness = 0.3  # Smooth, crystalline
+            lighting_effect = "specular"
+        elif T_local_factor > 0.7:
+            surface_roughness = 0.8  # Rough, liquid
+            lighting_effect = "diffuse"
+        else:
+            surface_roughness = 0.5
+            lighting_effect = "flat"
+
+        fig.add_trace(go.Surface(
+            x=X, y=Y, z=Z,
+            surfacecolor=surfacecolor,
+            colorscale=cmap_sh,
+            cmin=cmin,
+            cmax=cmax,
+            opacity=surface_opacity,
+            name=surface_name,
+            showscale=show_scale,
+            colorbar=dict(
+                title=dict(text=cbar_title, font=dict(size=cbar_title_size)),
+                thickness=cbar_thickness,
+                len=cbar_len,
+                tickfont=dict(size=cbar_tick_size),
+                xpad=cbar_xpad,
+                ypad=cbar_ypad
+            ) if show_scale else None,
+            hovertemplate=(
+                f"<b>{surface_name}</b><br>"
+                f"G_stable = %{{surfacecolor:,.0f}} J/mol<br>"
+                f"T = {T_render} K<br>"
+                f"<extra></extra>"
+            ) if not is_ghost else None,
+            lighting=dict(ambient=0.6, diffuse=0.4, roughness=surface_roughness),
+            lightposition=dict(x=100, y=100, z=50)
+        ))
+        return True
+
+    # Render main surface
+    success = render_sh_surface(T_val, opacity=0.9)
+
+    # Render ghost surfaces if enabled
+    if show_T_ghost and success:
+        T_ghost_list = []
+        if T_val - T_delta >= T_min:
+            T_ghost_list.append((T_val - T_delta, "(cold)"))
+        if T_val + T_delta <= T_max:
+            T_ghost_list.append((T_val + T_delta, "(hot)"))
+
+        for T_ghost, label in T_ghost_list:
+            render_sh_surface(T_ghost, opacity=ghost_opacity, is_ghost=True, ghost_label=label)
+
+    if not success:
+        st.warning("Spherical harmonic fitting failed. Try adjusting parameters.")
 
 # ------------------------------------------------------------------
 # MODE 2: MARKER POINT CLOUD (original functionality)
@@ -438,6 +646,7 @@ else:
     G_fcc = G_fcc[valid_eval]
     G_stable = np.minimum(G_liq, G_fcc)
     stable_label = np.where(G_liq <= G_fcc, "LIQUID", "FCC")
+    dG = G_liq - G_fcc
 
     if coord_sys == "Spherical (r, θ, φ)":
         r, theta, phi = cartesian_to_spherical(pts[:, 0], pts[:, 1], pts[:, 2])
@@ -534,7 +743,6 @@ else:
 
 # ------------------------------------------------------------------
 # COMMON ELEMENTS (Query point, composition vector, SH probe, e3nn shapes)
-# These are added regardless of rendering mode
 # ------------------------------------------------------------------
 
 # Query point overlay (always diamond)
@@ -549,31 +757,46 @@ if query_result is not None and not np.isnan(x_q[0]):
                        f"x_Co={query_result['Co']:.3f}<br>x_Cr={query_result['Cr']:.3f}<br>"
                        f"x_Fe={query_result['Fe']:.3f}<br>x_Ni={query_result['Ni']:.3f}<br>"
                        f"G_stable={query_result['G_stable']:,.0f} J/mol<br>"
+                       f"ΔG={query_result['dG']:,.0f} J/mol<br>"
                        f"Phase={query_result['Phase']}<extra></extra>")
     ))
 
-# Spherical harmonics probe (l=0 sphere and grid markers)
+# Spherical harmonics probe with temperature-dependent styling
 if query_result is not None and show_sh_probe:
     qx, qy, qz = query_result["Co"], query_result["Cr"], query_result["Fe"]
     g_val = abs(query_result["G_stable"])
     g_max_all = max(abs(df["G_LIQ"]).max(), abs(df["G_FCC"]).max())
-    radius = sh_probe_scale * (0.5 + 0.5 * g_val / g_max_all) if g_max_all > 0 else sh_probe_scale
-    phase_color = "#3498db" if query_result["Phase"] == "LIQUID" else "#e74c3c"
+
+    # Temperature-dependent probe radius
+    T_query_factor = (query_result['T'] - T_min) / T_range if T_range > 0 else 0.5
+    radius = sh_probe_scale * (0.5 + 0.5 * g_val / g_max_all) * (1.0 + 0.3 * T_query_factor) if g_max_all > 0 else sh_probe_scale
+
+    # Phase color with temperature modulation
+    if query_result["Phase"] == "LIQUID":
+        base_color = "#e74c3c"  # Red for liquid
+        # Hotter = more intense
+        phase_color = f"rgb(255, {int(100 * (1 - T_query_factor))}, {int(100 * (1 - T_query_factor))})"
+    else:
+        base_color = "#3498db"  # Blue for FCC
+        # Colder = more intense blue
+        phase_color = f"rgb({int(100 * T_query_factor)}, {int(150 * T_query_factor)}, 255)"
 
     u = np.linspace(0, 2 * np.pi, 30)
     v = np.linspace(0, np.pi, 30)
     x_sh = qx + radius * np.outer(np.cos(u), np.sin(v))
     y_sh = qy + radius * np.outer(np.sin(u), np.sin(v))
     z_sh = qz + radius * np.outer(np.ones(np.size(u)), np.cos(v))
+
     fig.add_trace(go.Surface(
         x=x_sh, y=y_sh, z=z_sh,
-        opacity=0.25,
+        opacity=0.25 + 0.15 * T_query_factor,  # More visible at high T
         colorscale=[[0, phase_color], [1, phase_color]],
         showscale=False,
-        name=f"SH l=0 ({query_result['Phase']})",
+        name=f"SH l=0 ({query_result['Phase']}, T={query_result['T']}K)",
         hovertemplate=(f"<b>Spherical Harmonic l=0</b><br>"
                        f"G_stable={query_result['G_stable']:,.0f} J/mol<br>"
                        f"Phase={query_result['Phase']}<br>"
+                       f"T={query_result['T']} K<br>"
                        f"Radius={radius:.4f}<extra></extra>")
     ))
 
@@ -706,10 +929,13 @@ if render_mode == "Markers (point cloud)":
     scene_y_title = y_title
     scene_z_title = z_title
 else:
-    # For SH mode, use Cartesian coordinates (Co, Cr, Fe) for the axes
     scene_x_title = "x<sub>Co</sub>"
     scene_y_title = "x<sub>Cr</sub>"
     scene_z_title = "x<sub>Fe</sub>"
+
+# Temperature-dependent title
+T_factor_display = (T_val - T_min) / T_range if T_range > 0 else 0.5
+phase_dominant = "LIQUID-dominated" if T_factor_display > 0.6 else "FCC-dominated" if T_factor_display < 0.4 else "Transition"
 
 fig.update_layout(
     template=template if template != "none" else None,
@@ -721,18 +947,12 @@ fig.update_layout(
         camera=dict(eye=dict(x=1.5, y=1.5, z=1.2))
     ),
     title=dict(
-        text=f"Gibbs Energy Tensor at T = {T_val} K | Mode: {render_mode}",
+        text=f"Gibbs Energy Tensor at T = {T_val} K ({phase_dominant}) | Mode: {render_mode}",
         font=dict(size=title_font)
     ),
     margin=dict(l=0, r=0, b=0, t=50),
     legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor="rgba(255,255,255,0.7)")
 )
-
-# Store selected colormap in session state for SH mode
-if render_mode == "Spherical Harmonic Surface (SH)" and SCIPY_AVAILABLE:
-    # Provide a colormap selector for SH surface
-    cmap_sh = st.selectbox("Surface Colormap", COLORMAPS, index=COLORMAPS.index("Viridis") if "Viridis" in COLORMAPS else 0, key="cmap_sh_sel")
-    st.session_state["cmap_sh"] = cmap_sh
 
 try:
     st.plotly_chart(fig, use_container_width=True)
@@ -740,7 +960,7 @@ except Exception as e:
     st.error(f"Plot rendering error: {e}")
     st.info("Try selecting a different colormap or reducing grid resolution.")
 
-# ================= STATISTICS (only meaningful for marker mode) =================
+# ================= STATISTICS =================
 if render_mode == "Markers (point cloud)":
     st.subheader("📊 Phase Statistics at Current Grid")
     col1, col2, col3, col4 = st.columns(4)
@@ -752,3 +972,19 @@ if render_mode == "Markers (point cloud)":
         col4.metric("LIQUID Region", f"{liq_pct:.1f}%")
     else:
         col4.metric("Points Rendered", f"{len(pts):,}")
+else:
+    # SH mode statistics
+    st.subheader("📊 Spherical Harmonic Surface Statistics")
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Temperature", f"{T_val} K")
+    col2.metric("T-factor", f"{T_factor:.2f}")
+    col3.metric("Distortion α", f"{sh_alpha:.2f}")
+    col4.metric("Harmonic l_max", f"{sh_l_max}")
+
+    # Show temperature evolution hint
+    st.info(f"""
+    **Temperature Effects:**
+    - **Low T ({T_min}K)**: FCC-dominated (solid), crystalline structure, smaller radius, sharp features
+    - **High T ({T_max}K)**: LIQUID-dominated (melted), fluid structure, larger radius, smooth features
+    - **Current**: {phase_dominant} region with T-factor = {T_factor:.2f}
+    """)
