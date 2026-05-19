@@ -52,10 +52,12 @@ def compute_real_sh_basis(l, m, azimuthal, polar):
     Seamlessly handles SciPy <1.15 (sph_harm) and >=1.17 (sph_harm_y).
     """
     if hasattr(special, 'sph_harm_y'):
-        # SciPy 1.17+: sph_harm_y(l, m, polar, azimuthal)
+        # SciPy 1.17+: sph_harm_y(l, m, theta, phi)
+        # theta = polar (colatitude), phi = azimuthal
         Y = special.sph_harm_y(l, m, polar, azimuthal)
     else:
-        # SciPy <1.15: sph_harm(m, l, azimuthal, polar)
+        # SciPy <1.15: sph_harm(m, l, theta, phi)
+        # theta = azimuthal, phi = polar
         Y = special.sph_harm(m, l, azimuthal, polar)
         
     # Standard real spherical harmonic conversion
@@ -232,7 +234,7 @@ def create_sh_surface_trace(TH, PH, G_smooth, R_fixed, alpha, cmap, T_val):
             "θ = %{x:.3f} rad<br>"
             "φ = %{y:.3f} rad<br>"
             "G = %{surfacecolor:,.0f} J/mol<br>"
-            f"Radius = %{z:.3f}<extra></extra>"
+            "Radius = %{z:.3f}<extra></extra>"
         )
     )
 
