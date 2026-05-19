@@ -66,12 +66,6 @@ def get_real_sph_harm(l, m, azimuthal, polar):
     -------
     Y_lm_real : array-like
         Real-valued spherical harmonic
-        
-    Notes
-    -----
-    SciPy version compatibility:
-    - SciPy < 1.17: uses sph_harm(m, l, azimuthal, polar)
-    - SciPy >= 1.17: uses sph_harm_y(l, m, polar, azimuthal) [FLIPPED angles!]
     """
     try:
         import scipy.special as special
@@ -90,16 +84,18 @@ def get_real_sph_harm(l, m, azimuthal, polar):
     
     # Convert complex spherical harmonic to real-valued
     if m > 0:
-        # Y_l^{m} + (-1)^m Y_l^{-m} = 2 * Re(Y_l^m) for m>0 in standard convention
-        # But sph_harm returns Condon-Shortley phase, so we use:
         return np.sqrt(2) * ((-1)**m) * np.real(Y_complex)
     elif m < 0:
         # For m < 0: extract from the |m| component
-        if hasattr(special, 'sph_harm_y'):
-            Y_pos_m = special.sph_harm_y(l, abs(m), polar, azimuthal)
-        else:
-            Y_pos_m = special.sph_harm(abs(m), l, azimuthal, polar)
-        return np.sqrt(2) * ((-1)**abs(m)) * np.imag(Y_pos_m)
+        try:
+            if hasattr(special, 'sph_harm_y'):
+                Y_pos_m = special.sph_harm_y(l, abs(m), polar, azimuthal)
+            else:
+                Y_pos_m = special.sph_harm(abs(m), l, azimuthal, polar)
+            return np.sqrt(2) * ((-1)**abs(m)) * np.imag(Y_pos_m)
+        except:
+            # Fallback if special not available
+            return np.sqrt(2) * ((-1)**abs(m)) * np.imag(Y_complex)
     else:
         # m = 0: purely real
         return np.real(Y_complex)
@@ -183,72 +179,66 @@ def cartesian_to_spherical(c1, c2, c3):
     return r_comp, theta, phi
 
 
-def compute_thermo_radius(r_comp, G, T, clip_range=(-5.0, 5.0)):
+def compute_thermo_radius_exp(r_comp, G, T, clip_range=(-5.0, 5.0)):
     """
-    Compute thermodynamic radius: R = r_comp * exp(-G/(R_g * T))
+    ORIGINAL: Exponential thermodynamic radius.
+    R = r_comp * exp(-G/(R_g * T))
     
-    Physics: 
-    - G is typically negative for stable condensed phases (cohesive energy)
-    - More negative G => larger R (phase is more stable, "expands" in thermo-space)
-    - Higher T amplifies the effect of entropy differences
-    
-    The clip_range prevents numerical explosion from extreme G values.
+    Note: This has WEAK effect because G values are similarly negative for both phases.
+    Kept for comparison but NOT recommended for visualization.
     """
-    # Scale factor: G/(RT) — dimensionless thermodynamic potential
     scaled_g = G / (RG * T)
-    # Clip to prevent visual explosion/implosion
     scaled_g = np.clip(scaled_g, clip_range[0], clip_range[1])
-    # Thermodynamic radius: composition base scaled by Boltzmann-like factor
     return r_comp * np.exp(-scaled_g)
 
 
-def compute_spherical_harmonics_coeffs(R_field, theta_grid, phi_grid, l_max=2):
+def compute_thermo_radius_sigmoid(r_comp, G_phase, G_other, T, alpha=3.0):
     """
-    Compute real spherical harmonic coefficients a_l^m for a given R(theta, phi) field.
+    SIGMOID-BASED: Differential stability radius.
     
-    Uses numerical integration over the sphere:
-    a_l^m = ∫∫ R(theta, phi) * Y_l^m(theta, phi) * sin(phi) dtheta dphi
+    R = r_comp * [1 + alpha * sigmoid((G_other - G_phase) / (RT))]
     
-    Parameters
-    ----------
-    R_field : 2D array
-        Radius field as function of (theta, phi)
-    theta_grid : 2D array
-        Azimuthal angles [0, 2*pi]
-    phi_grid : 2D array
-        Polar angles [0, pi]
-    l_max : int
-        Maximum degree
-        
-    Returns
-    -------
-    coeffs : dict
-        Coefficients a_l^m
-    reconstructed : 2D array
-        Reconstructed field from coefficients
+    This creates DRAMATIC separation:
+    - When G_phase << G_other (much more stable): R -> r_comp * (1 + alpha)
+    - When G_phase >> G_other (much less stable): R -> r_comp
+    
+    The alpha parameter controls maximum expansion (e.g., alpha=3 means 4x expansion).
     """
-    # Integration weights
-    dtheta = theta_grid[1, 0] - theta_grid[0, 0] if theta_grid.shape[0] > 1 else 2 * np.pi
-    dphi = phi_grid[0, 1] - phi_grid[0, 0] if phi_grid.shape[1] > 1 else np.pi
+    dG = G_other - G_phase  # positive when phase is more stable
+    scale = RG * T
+    x = dG / scale
+    # Logistic sigmoid
+    sigmoid = 1.0 / (1.0 + np.exp(-x))
+    return r_comp * (1.0 + alpha * sigmoid)
+
+
+def compute_thermo_radius_linear(r_comp, G_phase, G_other, beta=2.0, dG_max=None):
+    """
+    LINEAR: Direct differential radius offset.
     
-    coeffs = {}
-    reconstructed = np.zeros_like(R_field)
+    R = r_comp + beta * (G_other - G_phase) / |dG_max|
     
-    for l in range(l_max + 1):
-        for m in range(-l, l + 1):
-            # Use version-aware spherical harmonics
-            Y_lm = get_real_sph_harm(l, m, theta_grid, phi_grid)
-            
-            # Numerical integration: a_l^m = ∫ R * Y_l^m * sin(phi) dtheta dphi
-            integrand = R_field * Y_lm * np.sin(phi_grid)
-            a_lm = np.sum(integrand) * dtheta * dphi
-            
-            coeffs[f"a_{l}^{m}"] = a_lm
-            
-            # Add to reconstruction
-            reconstructed += a_lm * Y_lm
+    Simple, interpretable, and gives guaranteed separation when beta is large enough.
+    """
+    dG = G_other - G_phase
+    if dG_max is None:
+        dG_max = np.max(np.abs(dG))
+        if dG_max < 1e-10:
+            dG_max = 1.0
+    return r_comp + beta * dG / dG_max
+
+
+def compute_thermo_radius_tanh(r_comp, G_phase, G_other, T, alpha=2.0):
+    """
+    TANH-BASED: Smooth differential radius with bounded expansion.
     
-    return coeffs, reconstructed
+    R = r_comp * [1 + alpha * tanh((G_other - G_phase) / (2*RT))]
+    
+    tanh saturates at ±1, giving bounded expansion in [-alpha, +alpha] range.
+    """
+    dG = G_other - G_phase
+    x = dG / (2.0 * RG * T)
+    return r_comp * (1.0 + alpha * np.tanh(x))
 
 
 # ================= DATA LOADING =================
@@ -292,15 +282,14 @@ This app reconstructs the continuous $G(\mathbf{x}, T)$ hypersurface from discre
 The stable phase is determined by $G_{\text{stable}} = \min(G_{\text{LIQ}}, G_{\text{FCC}})$.
 
 **Thermo-Spherical Mode**: When activated, the radial coordinate $R$ is replaced by a 
-**thermodynamic radius** $R_{\text{thermo}} = r_{\text{comp}} \cdot \exp(-G/RT)$.  
-This binds temperature and energy into the geometry, causing FCC and LIQUID to occupy 
-**different radial shells** at the same angular coordinates $(\theta, \phi)$.
+**differential thermodynamic radius** that separates LIQUID and FCC based on their 
+**relative stability** $\Delta G = G_{\text{LIQ}} - G_{\text{FCC}}$, not absolute $G$ magnitude.
 
-**Spherical Harmonics Probe**: At any query point, we expand the local $R(\theta, \phi)$ field 
-into real spherical harmonics $Y_l^m$, computing coefficients $a_l^m$ that capture:
-- $l=0$: Isotropic scalar magnitude (thermal expansion)
-- $l=1$: Dipole vector (directional stability gradient)
-- $l=2$: Quadrupole (anisotropic shape distortion)
+**Scaling Options**:
+- **Sigmoid**: $R = r_{\text{comp}} \cdot [1 + \alpha \cdot \sigma(\Delta G/RT)]$ — sharp switching
+- **Linear**: $R = r_{\text{comp}} + \beta \cdot \Delta G/|\Delta G|_{\text{max}}$ — proportional offset  
+- **Tanh**: $R = r_{\text{comp}} \cdot [1 + \alpha \cdot \tanh(\Delta G/2RT)]$ — smooth bounded
+- **Exp (Legacy)**: $R = r_{\text{comp}} \cdot \exp(-G/RT)$ — weak effect, kept for comparison
 """)
 
 # ================= SIDEBAR =================
@@ -351,7 +340,29 @@ with st.sidebar:
     coord_sys = st.radio("Select", 
                          ["Cartesian (x_Co, x_Cr, x_Fe)", "Thermo-Spherical (R, θ, φ)"],
                          index=0,
-                         help="Thermo-Spherical: R=r_comp*exp(-G/RT), θ=atan2(Cr,Co), φ=acos(Fe/r_comp)")
+                         help="Thermo-Spherical: R is differential stability radius, θ=atan2(Cr,Co), φ=acos(Fe/r_comp)")
+
+    st.divider()
+
+    # --- THERMODYNAMIC SCALING METHOD ---
+    st.subheader("🔥 Thermo-Radius Scaling")
+    scaling_method = st.radio("Method",
+                              ["Sigmoid (Recommended)", "Linear", "Tanh", "Exp (Legacy — Weak)"],
+                              index=0,
+                              help="How to map ΔG = G_other - G_phase into radial distortion")
+    
+    if scaling_method == "Sigmoid (Recommended)":
+        alpha_sigmoid = st.slider("Expansion Factor α", 0.5, 10.0, 3.0, 0.5,
+                                  help="Max expansion: R_max = r_comp * (1 + α)")
+    elif scaling_method == "Linear":
+        beta_linear = st.slider("Offset Amplitude β", 0.1, 5.0, 2.0, 0.1,
+                                help="Direct radial offset in composition units")
+    elif scaling_method == "Tanh":
+        alpha_tanh = st.slider("Expansion Factor α", 0.5, 5.0, 2.0, 0.5,
+                               help="Max expansion: R_max = r_comp * (1 + α)")
+    else:  # Exp
+        clip_exp = st.slider("Clip Range", 1.0, 20.0, 5.0, 1.0,
+                             help="Clip |G/RT| to prevent explosion")
 
     st.divider()
 
@@ -454,6 +465,12 @@ if query_result:
     c3.metric("G_stable", f"{query_result['G_stable']:,.0f}", "J/mol")
     c4.metric("Stable Phase", query_result['Phase'])
     c5.metric("x_Ni", f"{query_result['Ni']:.3f}")
+    
+    # Show ΔG at query point
+    dG_q = query_result["G_LIQ"] - query_result["G_FCC"]
+    st.metric("ΔG = G_LIQ - G_FCC", f"{dG_q:,.0f} J/mol", 
+              delta="LIQUID favored" if dG_q < 0 else "FCC favored")
+    
     if T_val != query_result['T']:
         st.info(f"ℹ️ The 3D field is rendered at T = {T_val} K; query values are for T = {query_result['T']} K.")
     st.divider()
@@ -488,15 +505,32 @@ G_fcc = G_fcc[valid_eval]
 G_stable = np.minimum(G_liq, G_fcc)
 stable_label = np.where(G_liq <= G_fcc, "LIQUID", "FCC")
 
+# Compute ΔG for all points
+dG_all = G_liq - G_fcc  # negative where LIQUID is stable, positive where FCC is stable
+dG_max_global = np.max(np.abs(dG_all))
+if dG_max_global < 1e-10:
+    dG_max_global = 1.0
+
 # =============================================
 # COORDINATE TRANSFORMATION — THERMO-SPHERICAL
 # =============================================
 # First compute base spherical coordinates for ALL valid points
 r_comp, theta, phi = cartesian_to_spherical(pts[:, 0], pts[:, 1], pts[:, 2])
 
-# Compute thermodynamic radii for each phase
-R_liq = compute_thermo_radius(r_comp, G_liq, T_val)
-R_fcc = compute_thermo_radius(r_comp, G_fcc, T_val)
+# Compute thermodynamic radii based on selected scaling method
+if scaling_method == "Sigmoid (Recommended)":
+    R_liq = compute_thermo_radius_sigmoid(r_comp, G_liq, G_fcc, T_val, alpha=alpha_sigmoid)
+    R_fcc = compute_thermo_radius_sigmoid(r_comp, G_fcc, G_liq, T_val, alpha=alpha_sigmoid)
+elif scaling_method == "Linear":
+    R_liq = compute_thermo_radius_linear(r_comp, G_liq, G_fcc, beta=beta_linear, dG_max=dG_max_global)
+    R_fcc = compute_thermo_radius_linear(r_comp, G_fcc, G_liq, beta=beta_linear, dG_max=dG_max_global)
+elif scaling_method == "Tanh":
+    R_liq = compute_thermo_radius_tanh(r_comp, G_liq, G_fcc, T_val, alpha=alpha_tanh)
+    R_fcc = compute_thermo_radius_tanh(r_comp, G_fcc, G_liq, T_val, alpha=alpha_tanh)
+else:  # Exp (Legacy)
+    R_liq = compute_thermo_radius_exp(r_comp, G_liq, T_val, clip_range=(-clip_exp, clip_exp))
+    R_fcc = compute_thermo_radius_exp(r_comp, G_fcc, T_val, clip_range=(-clip_exp, clip_exp))
+
 R_stable = np.where(G_liq <= G_fcc, R_liq, R_fcc)
 
 # Determine which coordinate system to use for plotting
@@ -504,8 +538,7 @@ is_thermo_spherical = (coord_sys == "Thermo-Spherical (R, θ, φ)")
 
 if is_thermo_spherical:
     # THERMO-SPHERICAL MODE: Axes are (R_thermo, theta, phi)
-    # This creates DISTINCT geometric envelopes for FCC vs LIQUID
-    # because R depends on G, which differs between phases
+    # LIQUID and FCC now have DRAMATICALLY different R at same (theta, phi)
     
     if show_phase == "LIQUID Only":
         x_data, y_data, z_data = R_liq, theta, phi
@@ -534,9 +567,37 @@ if is_thermo_spherical:
         )
         # Use the stable phase's thermodynamic radius for the query point
         if query_result["Phase"] == "LIQUID":
-            R_q = compute_thermo_radius(r_q, np.array([query_result["G_LIQ"]]), query_result["T"])[0]
+            if scaling_method == "Sigmoid (Recommended)":
+                R_q = compute_thermo_radius_sigmoid(r_q, np.array([query_result["G_LIQ"]]), 
+                                                    np.array([query_result["G_FCC"]]), query_result["T"], 
+                                                    alpha=alpha_sigmoid)[0]
+            elif scaling_method == "Linear":
+                R_q = compute_thermo_radius_linear(r_q, np.array([query_result["G_LIQ"]]), 
+                                                   np.array([query_result["G_FCC"]]), 
+                                                   beta=beta_linear, dG_max=dG_max_global)[0]
+            elif scaling_method == "Tanh":
+                R_q = compute_thermo_radius_tanh(r_q, np.array([query_result["G_LIQ"]]), 
+                                                 np.array([query_result["G_FCC"]]), query_result["T"], 
+                                                 alpha=alpha_tanh)[0]
+            else:
+                R_q = compute_thermo_radius_exp(r_q, np.array([query_result["G_LIQ"]]), 
+                                                  query_result["T"], clip_range=(-clip_exp, clip_exp))[0]
         else:
-            R_q = compute_thermo_radius(r_q, np.array([query_result["G_FCC"]]), query_result["T"])[0]
+            if scaling_method == "Sigmoid (Recommended)":
+                R_q = compute_thermo_radius_sigmoid(r_q, np.array([query_result["G_FCC"]]), 
+                                                    np.array([query_result["G_LIQ"]]), query_result["T"], 
+                                                    alpha=alpha_sigmoid)[0]
+            elif scaling_method == "Linear":
+                R_q = compute_thermo_radius_linear(r_q, np.array([query_result["G_FCC"]]), 
+                                                   np.array([query_result["G_LIQ"]]), 
+                                                   beta=beta_linear, dG_max=dG_max_global)[0]
+            elif scaling_method == "Tanh":
+                R_q = compute_thermo_radius_tanh(r_q, np.array([query_result["G_FCC"]]), 
+                                                 np.array([query_result["G_LIQ"]]), query_result["T"], 
+                                                 alpha=alpha_tanh)[0]
+            else:
+                R_q = compute_thermo_radius_exp(r_q, np.array([query_result["G_FCC"]]), 
+                                                query_result["T"], clip_range=(-clip_exp, clip_exp))[0]
         x_q, y_q, z_q = np.array([R_q]), np.array([theta_q]), np.array([phi_q])
     else:
         x_q = y_q = z_q = np.array([np.nan])
@@ -635,7 +696,7 @@ elif show_phase == "FCC Only":
 else:  # Both Phases Overlay
     # In thermo-spherical mode, plot TWO distinct shells at different R
     if is_thermo_spherical:
-        # LIQUID shell — expanded/contracted by G_LIQ
+        # LIQUID shell — at R_liq
         fig.add_trace(go.Scatter3d(
             x=R_liq, y=theta, z=phi,
             mode="markers",
@@ -649,7 +710,7 @@ else:  # Both Phases Overlay
             hovertemplate=(f"<b>LIQUID</b><br>R_thermo=%{{x:.4f}}<<br>θ=%{{y:.4f}}<<br>"
                            f"φ=%{{z:.4f}}<<br>G_LIQ=%{{marker.color:,.0f}} J/mol<<extra></extra>")
         ))
-        # FCC shell — expanded/contracted by G_FCC
+        # FCC shell — at R_fcc
         fig.add_trace(go.Scatter3d(
             x=R_fcc, y=theta, z=phi,
             mode="markers",
@@ -721,12 +782,26 @@ if query_result is not None and show_sh_probe:
     else:
         G_q = query_result["G_FCC"]
     
-    # Compute thermodynamic radius at query point
-    R_q = compute_thermo_radius(np.array([r_q_comp]), np.array([G_q]), query_result["T"])[0]
+    # Compute thermodynamic radius at query point using same method as field
+    if scaling_method == "Sigmoid (Recommended)":
+        R_q = compute_thermo_radius_sigmoid(np.array([r_q_comp]), 
+                                            np.array([G_q]), 
+                                            np.array([query_result["G_FCC"] if query_result["Phase"] == "LIQUID" else query_result["G_LIQ"]]), 
+                                            query_result["T"], alpha=alpha_sigmoid)[0]
+    elif scaling_method == "Linear":
+        R_q = compute_thermo_radius_linear(np.array([r_q_comp]), 
+                                           np.array([G_q]), 
+                                           np.array([query_result["G_FCC"] if query_result["Phase"] == "LIQUID" else query_result["G_LIQ"]]), 
+                                           beta=beta_linear, dG_max=dG_max_global)[0]
+    elif scaling_method == "Tanh":
+        R_q = compute_thermo_radius_tanh(np.array([r_q_comp]), 
+                                         np.array([G_q]), 
+                                         np.array([query_result["G_FCC"] if query_result["Phase"] == "LIQUID" else query_result["G_LIQ"]]), 
+                                         query_result["T"], alpha=alpha_tanh)[0]
+    else:
+        R_q = compute_thermo_radius_exp(np.array([r_q_comp]), np.array([G_q]), query_result["T"])[0]
     
     # --- l=0: Isotropic Scalar Sphere ---
-    # Represents the fundamental magnitude of the Gibbs energy
-    # Radius proportional to |G| — larger |G| = more stable = bigger sphere
     g_max_all = max(abs(df["G_LIQ"]).max(), abs(df["G_FCC"]).max())
     l0_radius = sh_probe_scale * (0.3 + 0.7 * abs(G_q) / g_max_all) if g_max_all > 0 else sh_probe_scale
     
@@ -755,9 +830,6 @@ if query_result is not None and show_sh_probe:
     ))
     
     # --- l=1: Dipole Vector (Directional Stability Gradient) ---
-    # The l=1 coefficients capture the directional "pull" of stability
-    # We approximate this using the composition vector direction scaled by G magnitude
-    
     # Dipole axis: direction of composition vector (normalized)
     if r_q_comp > 1e-12:
         dipole_x = qx / r_q_comp
@@ -767,43 +839,33 @@ if query_result is not None and show_sh_probe:
         dipole_x, dipole_y, dipole_z = 1.0, 0.0, 0.0
     
     # Dipole magnitude: proportional to thermodynamic driving force
-    # Using the difference between LIQ and FCC G as the "force"
     dG = abs(query_result["G_LIQ"] - query_result["G_FCC"])
     dipole_strength = sh_probe_scale * 0.5 * (dG / 1e4)  # scaled for visibility
     
-    # Create dipole glyph: elongated ellipsoid along dipole axis
-    # Parametric ellipsoid: r = a * sin(v) * cos(u) * e_x + b * sin(v) * sin(u) * e_y + c * cos(v) * e_z
-    # where e_x, e_y, e_z are the local dipole-aligned basis
-    
     # Build rotation matrix to align z-axis with dipole direction
-    # Using Rodrigues rotation formula
     def rotation_matrix_from_z_to_target(tx, ty, tz):
         """Build rotation matrix that maps (0,0,1) to (tx, ty, tz)."""
-        # Target vector (normalized)
         t = np.array([tx, ty, tz])
         t = t / np.linalg.norm(t)
         
-        # Cross product with z-axis
         v = np.cross([0, 0, 1], t)
         s = np.linalg.norm(v)
         c = np.dot([0, 0, 1], t)
         
-        if s < 1e-10:  # Already aligned
+        if s < 1e-10:
             return np.eye(3) if c > 0 else np.diag([1, -1, -1])
         
         v = v / s
         vx, vy, vz = v
         
-        # Skew-symmetric cross-product matrix
         K = np.array([[0, -vz, vy], [vz, 0, -vx], [-vy, vx, 0]])
         
-        # Rodrigues formula
         R = np.eye(3) + K + K @ K * ((1 - c) / (s ** 2))
         return R
     
     R_rot = rotation_matrix_from_z_to_target(dipole_x, dipole_y, dipole_z)
     
-    # Ellipsoid parameters: elongated along dipole axis (z' in local frame)
+    # Ellipsoid parameters: elongated along dipole axis
     a_ell = l0_radius * 0.6  # equatorial radius
     c_ell = l0_radius * (1.0 + dipole_strength / l0_radius)  # polar radius (elongated)
     
@@ -812,7 +874,6 @@ if query_result is not None and show_sh_probe:
     y_local = a_ell * np.sin(V) * np.sin(U)
     z_local = c_ell * np.cos(V)
     
-    # Stack and rotate
     points_local = np.array([x_local.ravel(), y_local.ravel(), z_local.ravel()])
     points_rotated = R_rot @ points_local
     
@@ -833,10 +894,7 @@ if query_result is not None and show_sh_probe:
     ))
     
     # --- l=2: Quadrupole (Anisotropic Shape Distortion) ---
-    # Approximated by adding a secondary elongation perpendicular to dipole
     if sh_l_max >= 2:
-        # Quadrupole creates a "dumbbell" or "pancake" shape
-        # We model this as an additional ellipsoid with different axis ratios
         a_quad = l0_radius * (1.0 + 0.3 * dipole_strength / l0_radius)
         b_quad = l0_radius * 0.5
         c_quad = l0_radius * 0.5
@@ -845,7 +903,6 @@ if query_result is not None and show_sh_probe:
         y_q_local = b_quad * np.sin(V) * np.sin(U)
         z_q_local = c_quad * np.cos(V)
         
-        # Rotate by 90 degrees around y-axis for perpendicular orientation
         R_quad = rotation_matrix_from_z_to_target(dipole_y, -dipole_x, dipole_z)
         points_q_local = np.array([x_q_local.ravel(), y_q_local.ravel(), z_q_local.ravel()])
         points_q_rot = R_quad @ points_q_local
@@ -887,7 +944,6 @@ if query_result is not None and show_sh_probe:
 if query_result is not None and show_comp_vector:
     qx, qy, qz = query_result["Co"], query_result["Cr"], query_result["Fe"]
     
-    # Main line from origin to query point
     fig.add_trace(go.Scatter3d(
         x=[0, qx], y=[0, qy], z=[0, qz],
         mode="lines+text",
@@ -900,7 +956,6 @@ if query_result is not None and show_comp_vector:
                        f"Co={qx:.3f}<br>Cr={qy:.3f}<br>Fe={qz:.3f}<extra></extra>")
     ))
     
-    # Arrowhead at query point
     fig.add_trace(go.Scatter3d(
         x=[qx], y=[qy], z=[qz],
         mode="markers",
@@ -932,7 +987,6 @@ if show_ref_sphere:
 if show_axes_frame:
     axis_len = 1.1 if not is_thermo_spherical else float(max(R_stable.max() * 1.1, 1.1))
     
-    # X axis (Co or R_thermo)
     x_color = "red"
     fig.add_trace(go.Scatter3d(
         x=[0, axis_len], y=[0, 0], z=[0, 0],
@@ -945,7 +999,6 @@ if show_axes_frame:
         hoverinfo="skip"
     ))
     
-    # Y axis (Cr or theta)
     y_color = "green"
     fig.add_trace(go.Scatter3d(
         x=[0, 0], y=[0, axis_len], z=[0, 0],
@@ -958,7 +1011,6 @@ if show_axes_frame:
         hoverinfo="skip"
     ))
     
-    # Z axis (Fe or phi)
     z_color = "blue"
     fig.add_trace(go.Scatter3d(
         x=[0, 0], y=[0, 0], z=[0, axis_len],
@@ -973,7 +1025,6 @@ if show_axes_frame:
 
 # 3) Composition Simplex Wireframe
 if show_simplex and not is_thermo_spherical:
-    # Only show in Cartesian mode — simplex is meaningless in thermo-spherical
     simplex_edges = [
         [(1,0,0), (0,1,0)], [(1,0,0), (0,0,1)], [(1,0,0), (0,0,0)],
         [(0,1,0), (0,0,1)], [(0,1,0), (0,0,0)], [(0,0,1), (0,0,0)]
@@ -1015,7 +1066,7 @@ fig.update_layout(
     ),
     title=dict(
         text=f"{'Thermo-Spherical' if is_thermo_spherical else 'Cartesian'} View | "
-             f"T = {T_val} K | Points: {len(pts):,}",
+             f"{scaling_method} | T = {T_val} K | Points: {len(pts):,}",
         font=dict(size=title_font)
     ),
     margin=dict(l=0, r=0, b=0, t=50),
@@ -1042,15 +1093,43 @@ if show_phase in ["Stable Phase (Min G)", "Both Phases Overlay"]:
 else:
     col4.metric("Points Rendered", f"{len(pts):,}")
 
-# Additional thermo-spherical statistics
+# Additional thermo-spherical statistics with ΔG emphasis
 if is_thermo_spherical:
     st.subheader("🔮 Thermo-Spherical Metrics")
-    c1, c2, c3 = st.columns(3)
+    
+    # Compute R statistics
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Mean R_LIQ", f"{np.mean(R_liq):.4f}")
     c2.metric("Mean R_FCC", f"{np.mean(R_fcc):.4f}")
     c3.metric("R_LIQ / R_FCC", f"{np.mean(R_liq) / np.mean(R_fcc):.3f}")
+    c4.metric("Max |ΔG|", f"{dG_max_global:,.0f} J/mol")
+    
+    # Show ΔG distribution
+    st.markdown("### ΔG = G_LIQ - G_FCC Distribution")
+    col1, col2, col3 = st.columns(3)
+    
+    liq_stable_mask = dG_all < 0
+    fcc_stable_mask = dG_all > 0
+    
+    if np.any(liq_stable_mask):
+        col1.metric("Mean ΔG (LIQ stable)", f"{np.mean(dG_all[liq_stable_mask]):,.0f}")
+    else:
+        col1.metric("Mean ΔG (LIQ stable)", "N/A")
+        
+    if np.any(fcc_stable_mask):
+        col2.metric("Mean ΔG (FCC stable)", f"{np.mean(dG_all[fcc_stable_mask]):,.0f}")
+    else:
+        col2.metric("Mean ΔG (FCC stable)", "N/A")
+    
+    col3.metric("ΔG Std Dev", f"{np.std(dG_all):,.0f}")
+    
     st.markdown("""
-    **Interpretation**: 
-    - If Mean R_LIQ > Mean R_FCC: LIQUID phase is more stable (more negative G) at this temperature
-    - The ratio shows the relative thermodynamic "size" of the two phases
+    **Interpretation of Differential Radius**:
+    - **Sigmoid**: $R = r_{comp} \cdot [1 + \alpha \cdot \sigma(\Delta G/RT)]$
+      - When $\Delta G \ll 0$ (LIQUID stable): $R_{LIQ} \approx r_{comp}(1+\alpha)$, $R_{FCC} \approx r_{comp}$
+      - When $\Delta G \gg 0$ (FCC stable): $R_{FCC} \approx r_{comp}(1+\alpha)$, $R_{LIQ} \approx r_{comp}$
+    - **Linear**: $R = r_{comp} + \beta \cdot \Delta G/|\Delta G|_{max}$ — proportional to stability margin
+    - **Tanh**: Bounded smooth version of sigmoid, saturation at $\pm\alpha$
+    
+    The **separation** between LIQUID and FCC shells at the same $(\theta, \phi)$ directly encodes which phase is stable and by how much.
     """)
