@@ -286,13 +286,17 @@ if show_faces:
             # Assign color based on face index for colormap
             face_colors.append(idx)
 
+    # FIXED: Use proper colorbar title format for newer Plotly versions
     fig.add_trace(go.Mesh3d(
         x=vertices[:, 0], y=vertices[:, 1], z=vertices[:, 2],
         i=I, j=J, k=K,
         opacity=opacity,
         colorscale=selected_colormap,
         intensity=face_colors,
-        colorbar=dict(title="Face Index", titleside="right"),
+        colorbar=dict(
+            title=dict(text="Face Index", side="right"),
+            tickfont=dict(family=font_family, size=font_size)
+        ),
         name="Grain Volume",
         showlegend=True,
         hovertemplate="Face Index: %{intensity}<br>X: %{x:.2f}<br>Y: %{y:.2f}<br>Z: %{z:.2f}<extra></extra>"
