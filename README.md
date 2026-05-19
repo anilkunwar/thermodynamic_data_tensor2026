@@ -17,3 +17,10 @@
 
 [![meaningtowords](https://img.shields.io/badge/DF-v3.0-blue)](https://interface-drivingforce3.streamlit.app/) ( Interfacial Areal Density based upon the grain diameter, Inteface Driving Force Calculation for Stable Phase at a Given Temperature and Composition, Theory and Visualization of Driving Force Value for Given Thermodynamic State )
 
+
+# Tetrakaidecahedron FCC grain of CoCrFeNi alloy
+
+[![meaningtowords](https://img.shields.io/badge/fcc-v1.0-blue)](https://tetrakaidecahedron-grain1.streamlit.app/) ( Schematic construction of 3D grain in CoCrFeNi alloy)
+
+
+
