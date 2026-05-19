@@ -4,7 +4,10 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 import plotly.graph_objects as go
-from scipy.interpolate import LinearNDInterpolator, CubicSpline
+from scipy.interpolate import LinearNDInterpolator
+from scipy.linalg import lstsq
+import warnings
+warnings.filterwarnings('ignore')
 
 # Try importing scipy.special, handle missing or deprecated
 try:
@@ -12,13 +15,7 @@ try:
     SCIPY_AVAILABLE = True
 except ImportError:
     SCIPY_AVAILABLE = False
-    st.warning("⚠️ `scipy` not available. Spherical Harmonic surface mode will be disabled. "
-               "Install scipy with `pip install scipy` to enable it.")
-
-# =============================================
-# PHYSICAL CONSTANTS
-# =============================================
-R_GAS = 8.314  # J/(mol·K)
+    st.warning("⚠️ `scipy` not available. Spherical Harmonic surface mode will be disabled. Install scipy with `pip install scipy` to enable it.")
 
 # =============================================
 # PATH CONFIGURATION
@@ -27,7 +24,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_FILES_DIR = os.path.join(SCRIPT_DIR, "csv_files")
 os.makedirs(CSV_FILES_DIR, exist_ok=True)
 
-st.set_page_config(page_title="CoCrFeNi Gibbs Energy Explorer", layout="wide")
+st.set_page_config(page_title="CoCrFeNi Gibbs Energy Explorer - Physics Mode", layout="wide")
 
 # =============================================
 # VALIDATED COLORMAP LIBRARY (Plotly 6.x safe)
@@ -63,6 +60,71 @@ def cartesian_to_spherical(c1, c2, c3):
     phi = np.arccos(np.clip(c3 / safe_r, -1.0, 1.0))
     return r, theta, phi
 
+def spherical_to_cartesian(r, theta, phi):
+    """Convert spherical (r, theta, phi) back to Cartesian (Co, Cr, Fe)."""
+    x = r * np.sin(phi) * np.cos(theta)
+    y = r * np.sin(phi) * np.sin(theta)
+    z = r * np.cos(phi)
+    return x, y, z
+
+# =============================================
+# COLOR UTILITIES: HSV to RGB Conversion
+# =============================================
+def hsv_to_rgb(h, s, v):
+    """Convert HSV values (arrays) to RGB tuples."""
+    if s == 0.0:
+        return v, v, v
+    i = int(h * 6.0)
+    f = (h * 6.0) - i
+    p = v * (1.0 - s)
+    q = v * (1.0 - s * f)
+    t = v * (1.0 - s * (1.0 - f))
+    i = i % 6
+    if i == 0:
+        return v, t, p
+    if i == 1:
+        return q, v, p
+    if i == 2:
+        return p, v, t
+    if i == 3:
+        return p, q, v
+    if i == 4:
+        return t, p, v
+    if i == 5:
+        return v, p, q
+
+def hsv_to_rgb_vectorized(h, s, v):
+    """Vectorized HSV to RGB conversion for arrays."""
+    h = np.clip(h, 0, 1)
+    s = np.clip(s, 0, 1)
+    v = np.clip(v, 0, 1)
+    
+    i = np.floor(h * 6).astype(int) % 6
+    f = h * 6 - np.floor(h * 6)
+    p = v * (1 - s)
+    q = v * (1 - s * f)
+    t = v * (1 - s * (1 - f))
+    
+    r = np.zeros_like(h)
+    g = np.zeros_like(h)
+    b = np.zeros_like(h)
+    
+    mask0 = (i == 0)
+    mask1 = (i == 1)
+    mask2 = (i == 2)
+    mask3 = (i == 3)
+    mask4 = (i == 4)
+    mask5 = (i == 5)
+    
+    r[mask0] = v[mask0]; g[mask0] = t[mask0]; b[mask0] = p[mask0]
+    r[mask1] = q[mask1]; g[mask1] = v[mask1]; b[mask1] = p[mask1]
+    r[mask2] = p[mask2]; g[mask2] = v[mask2]; b[mask2] = t[mask2]
+    r[mask3] = p[mask3]; g[mask3] = q[mask3]; b[mask3] = v[mask3]
+    r[mask4] = t[mask4]; g[mask4] = p[mask4]; b[mask4] = v[mask4]
+    r[mask5] = v[mask5]; g[mask5] = p[mask5]; b[mask5] = q[mask5]
+    
+    return np.stack([r, g, b], axis=-1)
+
 # ================= DATA LOADING =================
 @st.cache_data
 def load_all_data(csv_dir=CSV_FILES_DIR):
@@ -90,7 +152,7 @@ T_min = min(T_list)
 T_max = max(T_list)
 T_range = T_max - T_min if T_max > T_min else 1.0
 
-# Global G ranges for consistent color scaling across temperatures
+# Global G ranges for consistent color scaling
 G_LIQ_global_min = df["G_LIQ"].min()
 G_LIQ_global_max = df["G_LIQ"].max()
 G_FCC_global_min = df["G_FCC"].min()
@@ -98,16 +160,16 @@ G_FCC_global_max = df["G_FCC"].max()
 G_global_min = min(G_LIQ_global_min, G_FCC_global_min)
 G_global_max = max(G_LIQ_global_max, G_FCC_global_max)
 
-# Global ΔG = G_LIQ - G_FCC statistics
+# Global ΔG statistics
 df["dG"] = df["G_LIQ"] - df["G_FCC"]
 dG_global_min = df["dG"].min()
 dG_global_max = df["dG"].max()
 dG_global_abs_max = max(abs(dG_global_min), abs(dG_global_max))
+dG_ref = 8.314 * T_max  # Reference: RT at highest T for normalization
 
-# Temperature-dependent phase statistics (for verification)
+# Temperature-dependent phase statistics
 @st.cache_data
 def compute_phase_statistics(df):
-    """Compute LIQUID fraction and average |dG| per temperature."""
     stats = []
     for T in sorted(df["T"].unique()):
         df_T = df[df["T"] == T]
@@ -130,11 +192,27 @@ phase_stats_df = compute_phase_statistics(df)
 def build_interpolators_for_T(df, T):
     df_T = df[df["T"] == T].copy()
     if len(df_T) == 0:
-        return None, None
+        return None, None, None
     pts = df_T[["Co", "Cr", "Fe"]].values
     interp_liq = LinearNDInterpolator(pts, df_T["G_LIQ"].values)
     interp_fcc = LinearNDInterpolator(pts, df_T["G_FCC"].values)
-    return interp_liq, interp_fcc
+    interp_stable = LinearNDInterpolator(pts, np.minimum(df_T["G_LIQ"], df_T["G_FCC"]).values)
+    return interp_liq, interp_fcc, interp_stable
+
+# Helper: interpolate G at arbitrary points from a DataFrame
+def interp_G_at_pts(df_ref, pts, col="G_stable"):
+    """Interpolate Gibbs energy at given composition points using LinearNDInterpolator."""
+    if col not in df_ref.columns:
+        if col == "G_stable":
+            df_ref = df_ref.copy()
+            df_ref["G_stable"] = np.minimum(df_ref["G_LIQ"], df_ref["G_FCC"])
+        else:
+            return np.full(len(pts), np.nan)
+    
+    pts_ref = df_ref[["Co", "Cr", "Fe"]].values
+    vals_ref = df_ref[col].values
+    interp = LinearNDInterpolator(pts_ref, vals_ref)
+    return interp(pts)
 
 # =============================================
 # REAL SPHERICAL HARMONICS (compatible with old & new SciPy)
@@ -146,7 +224,6 @@ if SCIPY_AVAILABLE:
         theta: azimuthal angle (0 to 2π)
         phi:   polar angle (0 to π)
         """
-        # Try modern sph_harm_y first (SciPy >= 1.17)
         if hasattr(special, 'sph_harm_y'):
             Y_complex = special.sph_harm_y(l, m, phi, theta)
         else:
@@ -163,8 +240,8 @@ if SCIPY_AVAILABLE:
         else:
             return Y_complex.real
 
-    def sample_g_on_sphere_full(interp_liq, interp_fcc, R_fixed, n_theta=50, n_phi=50):
-        """Evaluate G_LIQ, G_FCC, stable G and dG on a sphere of fixed radius."""
+    def sample_g_on_sphere(interp_liq, interp_fcc, R_fixed, n_theta=50, n_phi=50):
+        """Evaluate stable G and dG on a sphere of fixed radius."""
         theta = np.linspace(0, 2*np.pi, n_theta)
         phi = np.linspace(0, np.pi, n_phi)
         TH, PH = np.meshgrid(theta, phi)
@@ -173,7 +250,6 @@ if SCIPY_AVAILABLE:
         z = R_fixed * np.cos(PH)
         pts = np.column_stack([x.ravel(), y.ravel(), z.ravel()])
 
-        # Valid only if sum <= 1 (Ni non‑negative)
         valid = (pts[:,0] + pts[:,1] + pts[:,2]) <= 1.0
 
         G_liq = interp_liq(pts) if interp_liq is not None else np.full(len(pts), np.nan)
@@ -181,11 +257,8 @@ if SCIPY_AVAILABLE:
         G_stable = np.where(G_liq <= G_fcc, G_liq, G_fcc)
         dG = G_liq - G_fcc
 
-        valid = valid & ~np.isnan(G_liq) & ~np.isnan(G_fcc)
-        return (TH, PH,
-                G_liq.reshape(TH.shape), G_fcc.reshape(TH.shape),
-                G_stable.reshape(TH.shape), dG.reshape(TH.shape),
-                valid.reshape(TH.shape))
+        valid = valid & ~np.isnan(G_stable)
+        return TH, PH, G_stable.reshape(TH.shape), dG.reshape(TH.shape), valid.reshape(TH.shape)
 
     @st.cache_data(ttl=3600)
     def fit_sh_coeffs(theta_vals, phi_vals, g_vals, l_max=2):
@@ -210,7 +283,6 @@ if SCIPY_AVAILABLE:
                     row.append(y)
             A.append(row)
         A = np.array(A)
-        from scipy.linalg import lstsq
         coeffs, _, _, _ = lstsq(A, g_flat)
         return coeffs, l_max
 
@@ -226,179 +298,233 @@ if SCIPY_AVAILABLE:
         return recon
 
     # =============================================
-    # CONTINUOUS T-FIELD VIA SPLINE-INTERPOLATED SH COEFFICIENTS
+    # PHYSICS-BASED: ENTROPY-DECOMPOSED SH MODEL
     # =============================================
-    @st.cache_data(ttl=3600)
-    def build_continuous_sh_field(df, l_max=4, R_fixed=0.5, n_theta=60, n_phi=60):
+    @st.cache_data(ttl=7200)
+    def build_physics_sh_model(df, T_list, l_max_H=4, l_max_S=3, Tc=1200, delta_T=150):
         """
-        Pre-fit SH coefficients at every discrete T, then build cubic splines
-        so that T becomes a continuous parameter for the Gibbs energy field.
+        Build entropy-decomposed spherical harmonic model.
+        Fits H(x) and S(x) separately, then reconstructs G(x,T) = H(x) - T*S(x).
         """
-        T_list = sorted(df["T"].unique())
-        T_array = np.array(T_list, dtype=float)
-        n_coeffs = (l_max + 1) ** 2
-
-        coeff_data = {"G_liq": [], "G_fcc": [], "dG": []}
-
-        for T in T_list:
-            interp_liq, interp_fcc = build_interpolators_for_T(df, T)
-            if interp_liq is None:
-                for key in coeff_data:
-                    coeff_data[key].append(np.zeros(n_coeffs))
+        model = {}
+        
+        # Pre-sort temperatures for finite-difference derivatives
+        T_sorted = sorted(T_list)
+        
+        for idx, T in enumerate(T_sorted):
+            df_T = df[df["T"] == T].copy()
+            if len(df_T) < 10:
                 continue
+                
+            pts = df_T[["Co", "Cr", "Fe"]].values
+            r, theta, phi = cartesian_to_spherical(pts[:,0], pts[:,1], pts[:,2])
+            
+            # Compute stable G at this T
+            G_T = np.minimum(df_T["G_LIQ"].values, df_T["G_FCC"].values)
+            
+            # Estimate ∂G/∂T via central finite difference
+            if idx == 0 or idx == len(T_sorted) - 1:
+                # Forward/backward difference at endpoints
+                if idx == 0 and len(T_sorted) > 1:
+                    T_next = T_sorted[idx + 1]
+                    df_next = df[df["T"] == T_next]
+                    G_next = interp_G_at_pts(df_next, pts)
+                    dG_dT = (G_next - G_T) / (T_next - T)
+                elif idx == len(T_sorted) - 1 and len(T_sorted) > 1:
+                    T_prev = T_sorted[idx - 1]
+                    df_prev = df[df["T"] == T_prev]
+                    G_prev = interp_G_at_pts(df_prev, pts)
+                    dG_dT = (G_T - G_prev) / (T - T_prev)
+                else:
+                    continue
+            else:
+                # Central difference
+                T_prev = T_sorted[idx - 1]
+                T_next = T_sorted[idx + 1]
+                df_prev = df[df["T"] == T_prev]
+                df_next = df[df["T"] == T_next]
+                
+                G_prev = interp_G_at_pts(df_prev, pts)
+                G_next = interp_G_at_pts(df_next, pts)
+                
+                dG_dT = (G_next - G_prev) / (T_next - T_prev)
+            
+            # Thermodynamic relations: S = -∂G/∂T, H = G + T*S
+            S_vals = -dG_dT
+            H_vals = G_T + T * S_vals
+            
+            # Clean NaN/inf values
+            valid_mask = np.isfinite(H_vals) & np.isfinite(S_vals) & ~np.isnan(theta) & ~np.isnan(phi)
+            if np.sum(valid_mask) < 20:
+                continue
+                
+            theta_valid = theta[valid_mask]
+            phi_valid = phi[valid_mask]
+            H_valid = H_vals[valid_mask]
+            S_valid = S_vals[valid_mask]
+            
+            # Fit spherical harmonics to H and S
+            coeffs_H, l_max_H_used = fit_sh_coeffs(theta_valid, phi_valid, H_valid, l_max=l_max_H)
+            coeffs_S, l_max_S_used = fit_sh_coeffs(theta_valid, phi_valid, S_valid, l_max=l_max_S)
+            
+            if coeffs_H is None or coeffs_S is None:
+                continue
+            
+            model[T] = {
+                "coeffs_H": coeffs_H,
+                "coeffs_S": coeffs_S,
+                "l_max_H": l_max_H_used,
+                "l_max_S": l_max_S_used,
+                "Tc": Tc,
+                "delta_T": delta_T,
+                "n_coeffs_H": len(coeffs_H),
+                "n_coeffs_S": len(coeffs_S)
+            }
+        
+        return model
 
-            TH, PH, G_liq, G_fcc, G_stable, dG, valid = sample_g_on_sphere_full(
-                interp_liq, interp_fcc, R_fixed, n_theta, n_phi
-            )
+    def interpolate_coeffs_across_T(model, T_target):
+        """Linearly interpolate SH coefficients between neighboring temperatures."""
+        T_keys = sorted(model.keys())
+        
+        if T_target <= T_keys[0]:
+            return model[T_keys[0]]["coeffs_H"], model[T_keys[0]]["coeffs_S"]
+        if T_target >= T_keys[-1]:
+            return model[T_keys[-1]]["coeffs_H"], model[T_keys[-1]]["coeffs_S"]
+        
+        # Find bracketing temperatures
+        for i in range(len(T_keys) - 1):
+            if T_keys[i] <= T_target <= T_keys[i+1]:
+                T_low, T_high = T_keys[i], T_keys[i+1]
+                w = (T_target - T_low) / (T_high - T_low)
+                
+                coeffs_H_low = model[T_low]["coeffs_H"]
+                coeffs_H_high = model[T_high]["coeffs_H"]
+                coeffs_S_low = model[T_low]["coeffs_S"]
+                coeffs_S_high = model[T_high]["coeffs_S"]
+                
+                # Pad to same length if needed
+                max_len_H = max(len(coeffs_H_low), len(coeffs_H_high))
+                max_len_S = max(len(coeffs_S_low), len(coeffs_S_high))
+                
+                coeffs_H_low = np.pad(coeffs_H_low, (0, max_len_H - len(coeffs_H_low)), 'constant')
+                coeffs_H_high = np.pad(coeffs_H_high, (0, max_len_H - len(coeffs_H_high)), 'constant')
+                coeffs_S_low = np.pad(coeffs_S_low, (0, max_len_S - len(coeffs_S_low)), 'constant')
+                coeffs_S_high = np.pad(coeffs_S_high, (0, max_len_S - len(coeffs_S_high)), 'constant')
+                
+                coeffs_H_interp = (1-w) * coeffs_H_low + w * coeffs_H_high
+                coeffs_S_interp = (1-w) * coeffs_S_low + w * coeffs_S_high
+                
+                return coeffs_H_interp, coeffs_S_interp
+        
+        return model[T_keys[0]]["coeffs_H"], model[T_keys[0]]["coeffs_S"]
 
-            for key, vals in [("G_liq", G_liq), ("G_fcc", G_fcc), ("dG", dG)]:
-                coeffs, _ = fit_sh_coeffs(TH, PH, vals, l_max=l_max)
-                if coeffs is None:
-                    coeffs = np.zeros(n_coeffs)
-                coeff_data[key].append(coeffs)
+    def temperature_weighted_coeffs(coeffs_raw, l_max, T, Tc, delta_T):
+        """
+        Apply Landau-type order parameter to suppress high-l terms at high T.
+        η(T) = 1 / (1 + exp[(T - Tc)/ΔT])
+        c_lm^eff = c_lm^0 * η^l
+        """
+        eta = 1.0 / (1.0 + np.exp((T - Tc) / delta_T))
+        coeffs_weighted = np.zeros_like(coeffs_raw)
+        idx = 0
+        for l in range(l_max + 1):
+            weight = eta ** l
+            for m in range(-l, l + 1):
+                if idx < len(coeffs_raw):
+                    coeffs_weighted[idx] = coeffs_raw[idx] * weight
+                idx += 1
+        return coeffs_weighted, eta
 
-        splines = {}
-        for key in coeff_data:
-            arr = np.array(coeff_data[key])  # shape: (n_T, n_coeffs)
-            splines[key] = [CubicSpline(T_array, arr[:, i]) for i in range(n_coeffs)]
+    def reconstruct_G_physics(theta_grid, phi_grid, coeffs_H, coeffs_S, T, l_max):
+        """
+        Physics-based reconstruction: G(θ,φ,T) = H(θ,φ) - T·S(θ,φ)
+        using spherical harmonic expansion.
+        """
+        G_recon = np.zeros_like(theta_grid)
+        idx = 0
+        for l in range(l_max + 1):
+            for m in range(-l, l + 1):
+                if idx >= len(coeffs_H) or idx >= len(coeffs_S):
+                    break
+                Y_lm = get_real_sph_harm(l, m, theta_grid, phi_grid)
+                # Thermodynamic superposition
+                G_recon += (coeffs_H[idx] - T * coeffs_S[idx]) * Y_lm
+                idx += 1
+        return G_recon
 
-        return splines, float(T_array[0]), float(T_array[-1]), l_max
+    def compute_dG_surface_physics(model, T_render, theta_grid, phi_grid, l_max=4):
+        """Compute ΔG = G_LIQ - G_FCC surface using physics-based reconstruction."""
+        # For phase coloring, we need separate LIQ and FCC reconstructions
+        # This is a simplified version: use stable G and sign from nearest data
+        coeffs_H, coeffs_S = interpolate_coeffs_across_T(model, T_render)
+        G_recon = reconstruct_G_physics(theta_grid, phi_grid, coeffs_H, coeffs_S, T_render, l_max)
+        
+        # Estimate dG sign from nearest temperature slice
+        T_nearest = min(model.keys(), key=lambda t: abs(t - T_render))
+        df_T = df[df["T"] == T_nearest]
+        if len(df_T) == 0:
+            return np.zeros_like(G_recon)
+        
+        # Sample dG at grid points for sign information
+        pts_grid = np.column_stack([
+            (np.sin(phi_grid) * np.cos(theta_grid)).ravel(),
+            (np.sin(phi_grid) * np.sin(theta_grid)).ravel(),
+            (np.cos(phi_grid)).ravel()
+        ])
+        valid_mask = np.sum(pts_grid**2, axis=1) > 1e-6
+        pts_valid = pts_grid[valid_mask]
+        
+        # Interpolate dG from data
+        dG_data = df_T["G_LIQ"].values - df_T["G_FCC"].values
+        pts_data = df_T[["Co", "Cr", "Fe"]].values
+        interp_dG = LinearNDInterpolator(pts_data, dG_data)
+        dG_interp = interp_dG(pts_valid)
+        
+        # Create full dG field with sign from data, magnitude from reconstruction gradient
+        dG_full = np.zeros(theta_grid.size)
+        dG_full[valid_mask.ravel()] = dG_interp
+        dG_full = dG_full.reshape(theta_grid.shape)
+        
+        return dG_full
 
-    def reconstruct_fields_at_t(TH, PH, T_query, splines, l_max):
-        """Reconstruct G_LIQ, G_FCC and dG at an arbitrary float temperature."""
-        fields = {}
-        for key, spline_list in splines.items():
-            coeffs = np.array([sp(T_query) for sp in spline_list])
-            fields[key] = reconstruct_sh_surface(TH, PH, coeffs, l_max)
-        return fields
-
-# =============================================
-# PHYSICS-BASED RADIUS & QUERY EVALUATION
-# =============================================
-def compute_physics_radius(dG, T, R_base, alpha, w, beta_thermal=0.15, T_ref=1000.0):
-    """
-    Gibbs–Helmholtz spherical deformation:
-        ρ = R₀(T) · [ 1 + α · tanh( η / w ) ]
-    where η = ΔG / (RT) is the dimensionless phase driving force.
-    """
-    RT = R_GAS * T
-    eta = np.where(RT > 1e-6, dG / RT, 0.0)
-
-    # Thermal expansion of reference radius
-    R_0 = R_base * (1.0 + beta_thermal * (T - T_ref) / T_ref)
-
-    # Sigmoidal deformation: expanded for FCC (η > 0), contracted for LIQUID (η < 0)
-    deformation = np.tanh(eta / w)
-    radius = R_0 * (1.0 + alpha * deformation)
-    return radius, eta, R_0
-
-
-def evaluate_query_point(df, q_co, q_cr, q_fe, T_query):
-    """
-    Evaluate thermodynamic state at query composition and temperature.
-    If T_query is not in the discrete dataset, linearly interpolate between
-    the two bracketing temperatures.
-    """
-    T_list = sorted(df["T"].unique())
-    pt = np.array([[q_co, q_cr, q_fe]])
-
-    if T_query in T_list:
-        interp_liq, interp_fcc = build_interpolators_for_T(df, T_query)
-        if interp_liq is None:
-            return None
-        g_liq = float(interp_liq(pt)[0])
-        g_fcc = float(interp_fcc(pt)[0])
-    else:
-        lower = [t for t in T_list if t <= T_query]
-        upper = [t for t in T_list if t >= T_query]
-        T_lower = max(lower) if lower else T_list[0]
-        T_upper = min(upper) if upper else T_list[-1]
-
-        if T_lower == T_upper:
-            interp_liq, interp_fcc = build_interpolators_for_T(df, T_lower)
-            g_liq = float(interp_liq(pt)[0])
-            g_fcc = float(interp_fcc(pt)[0])
-        else:
-            w = (T_query - T_lower) / (T_upper - T_lower)
-            il_l, if_l = build_interpolators_for_T(df, T_lower)
-            il_u, if_u = build_interpolators_for_T(df, T_upper)
-            gl_l, gf_l = float(il_l(pt)[0]), float(if_l(pt)[0])
-            gl_u, gf_u = float(il_u(pt)[0]), float(if_u(pt)[0])
-
-            # Handle possible NaN from out-of-hull at one T but not the other
-            g_liq = gl_l if np.isnan(gl_u) else (gl_u if np.isnan(gl_l) else gl_l + w * (gl_u - gl_l))
-            g_fcc = gf_l if np.isnan(gf_u) else (gf_u if np.isnan(gf_l) else gf_l + w * (gf_u - gf_l))
-
-    if np.isnan(g_liq) or np.isnan(g_fcc):
-        return None
-
-    g_stable = min(g_liq, g_fcc)
-    phase = "LIQUID" if g_liq <= g_fcc else "FCC"
-    dG = g_liq - g_fcc
-    eta = dG / (R_GAS * T_query) if T_query > 0 else 0.0
-
-    return {
-        "T": T_query, "Co": q_co, "Cr": q_cr, "Fe": q_fe,
-        "Ni": 1.0 - q_co - q_cr - q_fe,
-        "G_LIQ": g_liq, "G_FCC": g_fcc,
-        "G_stable": g_stable, "Phase": phase,
-        "dG": dG, "eta": eta
-    }
-
-
-def interpolate_grid_to_t(grid_pts, df, T_query):
-    """
-    Interpolate G_LIQ and G_FCC onto a fixed composition grid at arbitrary T_query
-    by linearly weighting the two nearest discrete temperature slices.
-    """
-    T_list = sorted(df["T"].unique())
-    if T_query in T_list:
-        interp_liq, interp_fcc = build_interpolators_for_T(df, T_query)
-        return interp_liq(grid_pts), interp_fcc(grid_pts)
-
-    lower = [t for t in T_list if t <= T_query]
-    upper = [t for t in T_list if t >= T_query]
-    T_lower = max(lower) if lower else T_list[0]
-    T_upper = min(upper) if upper else T_list[-1]
-
-    if T_lower == T_upper:
-        interp_liq, interp_fcc = build_interpolators_for_T(df, T_lower)
-        return interp_liq(grid_pts), interp_fcc(grid_pts)
-
-    w = (T_query - T_lower) / (T_upper - T_lower)
-    il_l, if_l = build_interpolators_for_T(df, T_lower)
-    il_u, if_u = build_interpolators_for_T(df, T_upper)
-
-    G_liq_l, G_fcc_l = il_l(grid_pts), if_l(grid_pts)
-    G_liq_u, G_fcc_u = il_u(grid_pts), if_u(grid_pts)
-
-    # NaN-safe blending
-    G_liq = np.where(np.isnan(G_liq_l), G_liq_u,
-             np.where(np.isnan(G_liq_u), G_liq_l, G_liq_l + w * (G_liq_u - G_liq_l)))
-    G_fcc = np.where(np.isnan(G_fcc_l), G_fcc_u,
-             np.where(np.isnan(G_fcc_u), G_fcc_l, G_fcc_l + w * (G_fcc_u - G_fcc_l)))
-    return G_liq, G_fcc
-
+    def compute_mean_curvature(G, theta, phi, R=1.0):
+        """
+        Approximate mean curvature of G(θ,φ) surface.
+        Returns array of same shape as G.
+        """
+        # Finite-difference second derivatives
+        dG_dtheta = np.gradient(G, axis=1)
+        dG_dphi = np.gradient(G, axis=0)
+        d2G_dtheta2 = np.gradient(dG_dtheta, axis=1)
+        d2G_dphi2 = np.gradient(dG_dphi, axis=0)
+        d2G_dthetadphi = np.gradient(dG_dtheta, axis=0)
+        
+        # Metric coefficients for spherical coordinates
+        sin_phi = np.sin(phi)
+        E = R**2 * sin_phi**2 + dG_dtheta**2
+        F = dG_dtheta * dG_dphi
+        G_met = R**2 + dG_dphi**2
+        
+        # Mean curvature formula (simplified for small gradients)
+        denom = (1 + (dG_dtheta/(R*sin_phi))**2 + (dG_dphi/R)**2)**1.5
+        H = 0.5 * (d2G_dtheta2/(R**2 * sin_phi**2) + d2G_dphi2/R**2) / denom
+        
+        return np.nan_to_num(H, nan=0.0, posinf=0.0, neginf=0.0)
 
 # ================= HEADER =================
-st.title("🔷 Co-Cr-Fe-Ni Gibbs–Helmholtz Tensor Visualization")
+st.title("🔷 Co-Cr-Fe-Ni Gibbs Energy Explorer: Physics-Based Mode")
 st.markdown(r"""
-This app reconstructs the continuous $G(\mathbf{x}, T)$ hypersurface from discrete CSV data.  
-The phase landscape is driven by the dimensionless coordinate $\eta = \Delta G / RT$.  
-The stable phase is determined by $G_{\text{stable}} = \min(G_{\text{LIQ}}, G_{\text{FCC}})$.
+This app reconstructs the continuous $G(\mathbf{x}, T)$ hypersurface using **thermodynamically-consistent spherical harmonics**.
+
+**Physics Model:** $G(\mathbf{x}, T) = H(\mathbf{x}) - T \cdot S(\mathbf{x})$  
+**Order Parameter:** $\eta(T) = [1 + \exp((T-T_c)/\Delta T)]^{-1}$ modulates harmonic content  
+**Visual Encoding:** Color saturation ∝ $|\Delta G|/RT$, surface roughness ∝ atomic mobility
 """)
 
 # ================= SIDEBAR =================
 with st.sidebar:
     st.header("🎛️ Control Panel")
-
-    # --- Unified Temperature ---
-    st.subheader("🌡️ Thermodynamic Temperature")
-    T_query = st.slider("Temperature (K)", int(T_min), int(T_max),
-                        int((T_min + T_max) / 2), step=10,
-                        help="Single unified T for both query evaluation and field rendering")
-
-    st.divider()
 
     # --- Query Point ---
     st.subheader("📍 Query Point")
@@ -406,87 +532,148 @@ with st.sidebar:
     q_cr = st.number_input("x_Cr", 0.0, 1.0, 0.25, 0.01, format="%.2f")
     q_fe = st.number_input("x_Fe", 0.0, 1.0, 0.25, 0.01, format="%.2f")
 
+    q_t = st.selectbox("Query T (K)", T_list, index=len(T_list)//2 if T_list else 0)
+
     comp_sum = q_co + q_cr + q_fe
     if comp_sum > 1.0:
         st.warning(f"⚠️ Sum = {comp_sum:.2f} > 1.0 (x_Ni would be negative).")
 
-    eval_query = st.button("🔍 Evaluate at T", use_container_width=True)
+    eval_query = st.button("🔍 Evaluate at Point", use_container_width=True)
 
     st.divider()
 
     # --- Spherical Harmonics Probe ---
-    st.subheader("🔮 Local SH Probe")
+    st.subheader("🔮 Spherical Harmonics Probe")
     show_sh_probe = st.toggle("Show SH Probe", value=True,
-                              help="Display spherical harmonic glyph at the query point scaled by |η|")
+                              help="Display l=0 (scalar) and l=1 (vector) spherical harmonic glyphs at the query point")
     sh_probe_scale = st.slider("Probe Scale", 0.01, 0.5, 0.08, 0.01,
-                               help="Base radius of the probe sphere")
+                               help="Radius of the spherical harmonic probe sphere")
     show_comp_vector = st.toggle("Show Composition Vector", value=True,
                                  help="l=1 arrow from origin to query point")
 
     st.divider()
 
-    # --- Visualization Mode ---
+    # --- Global Viz Params ---
+    st.subheader("🌡️ Visualization Parameters")
+    T_val = st.select_slider("Field T (K)", options=T_list,
+                             value=T_list[len(T_list)//2] if T_list else 1000)
+    grid_res = st.slider("Grid Resolution (for marker mode)", 15, 500, 25, step=5,
+                         help="Higher = finer detail but slower rendering.")
+
+    st.divider()
+
+    # --- Coordinate System ---
+    st.subheader("🌐 Coordinate System (marker mode)")
+    coord_sys = st.radio("Select",
+                         ["Cartesian (x_Co, x_Cr, x_Fe)", "Spherical (r, θ, φ)"],
+                         index=0,
+                         help="Spherical: r=√(Co²+Cr²+Fe²), θ=atan2(Cr,Co), φ=acos(Fe/r)")
+
+    st.divider()
+
+    # --- Visualization Mode Selection ---
     st.subheader("🎨 Rendering Mode")
     if not SCIPY_AVAILABLE:
-        st.error("⚠️ `scipy` not installed. Spherical Harmonic Surface mode is disabled.")
+        st.error("⚠️ `scipy` not installed. Spherical Harmonic modes are disabled.")
         render_mode = "Markers (point cloud)"
         sh_disabled = True
+        physics_disabled = True
     else:
         render_mode = st.radio("Visualization",
-                               ["Markers (point cloud)", "Spherical Harmonic Surface (SH)"],
-                               index=1,
-                               help="SH surface shows continuous angular variation with physics-based deformation")
-        sh_disabled = False
+                               ["Markers (point cloud)", 
+                                "Spherical Harmonic Surface (Empirical)", 
+                                "Spherical Harmonic Surface (Physics-Based)"],
+                               index=2,
+                               help="Physics-Based: G=H-TS decomposition with Landau order parameter")
+        sh_disabled = (render_mode == "Markers (point cloud)")
+        physics_disabled = (render_mode != "Spherical Harmonic Surface (Physics-Based)")
 
-    # --- SH-specific controls ---
-    if render_mode == "Spherical Harmonic Surface (SH)" and not sh_disabled:
-        st.subheader("🔧 Physics-Based SH Parameters")
-
-        st.markdown(r"""
-        **Theory:** $\rho = R_0(T)\bigl[1 + \alpha \tanh(\eta / w)\bigr]$  
-        where $\eta = \Delta G / RT$. At $\eta = 0$ the radius sits exactly at $R_0$ — the phase boundary.
-        """)
-
-        sh_R_base = st.slider("Base radius $R_0$", 0.2, 0.9, 0.50, 0.05,
-                              help="Reference radius; thermal expansion scales this")
-        sh_alpha = st.slider("Distortion amplitude α", 0.0, 0.50, 0.15, 0.01,
-                             help="Maximum radial expansion/contraction from η")
-        sh_w = st.slider("Transition width w (η-space)", 0.1, 3.0, 1.0, 0.1,
-                         help="Smaller w → sharper phase front")
-        sh_beta_thermal = st.slider("Thermal expansion β", 0.0, 0.30, 0.15, 0.01,
-                                    help="Fractional radius change per ΔT/T_ref")
-        sh_T_ref = st.number_input("Reference T_ref (K)", 500.0, 3000.0, 1000.0, 50.0)
-
-        sh_l_max = st.slider("Max harmonic degree l", 0, 6, 4,
-                             help="Higher l captures crystalline anisotropy")
+    # --- Empirical SH Parameters (only if empirical mode selected) ---
+    if render_mode == "Spherical Harmonic Surface (Empirical)" and not sh_disabled:
+        st.subheader("🔧 Empirical SH Parameters")
+        T_factor = (T_val - T_min) / T_range if T_range > 0 else 0.5
+        sh_R_fixed = st.slider("Base sphere radius", 0.2, 0.9, 
+                               float(0.35 + 0.25 * T_factor), 0.01)
+        sh_alpha = st.slider("Radial distortion strength", 0.0, 0.8, 
+                             float(0.1 + 0.4 * T_factor), 0.01)
+        sh_l_max = st.slider("Max harmonic degree l", 0, 6, 
+                             int(4 - 2 * T_factor))
         sh_n_theta = st.slider("Theta resolution", 20, 120, 60, step=10)
         sh_n_phi   = st.slider("Phi resolution", 20, 120, 60, step=10)
-
-        st.markdown("**🎨 Surface Coloring**")
         surface_color_mode = st.radio("Color by",
-                                      ["η = ΔG/RT (dimensionless)",
-                                       "ΔG = G_LIQ - G_FCC (J/mol)",
-                                       "Stable G (global scale)",
+                                      ["Stable G (global scale)", 
+                                       "ΔG = G_LIQ - G_FCC (phase indicator)",
                                        "Temperature-encoded"],
-                                      index=0,
-                                      help="η mode: diverging colormap centered at 0 (phase boundary)")
-
-        if surface_color_mode == "η = ΔG/RT (dimensionless)":
-            cmap_sh = st.selectbox("Colormap", ["RdBu_r", "Balance", "Curl", "Spectral"], index=0,
-                                   help="Diverging: blue=FCC (η>0), red=LIQUID (η<<0)")
-        elif surface_color_mode in ["ΔG = G_LIQ - G_FCC (J/mol)", "Stable G (global scale)"]:
-            cmap_sh = st.selectbox("Colormap", COLORMAPS,
-                                   index=COLORMAPS.index("Viridis") if "Viridis" in COLORMAPS else 0)
+                                      index=1)
+        if surface_color_mode == "ΔG = G_LIQ - G_FCC (phase indicator)":
+            cmap_sh = st.selectbox("Colormap", ["RdBu_r", "RdYlBu", "Spectral", "Balance", "Curl"], index=0)
+        elif surface_color_mode == "Temperature-encoded":
+            cmap_sh = st.selectbox("Colormap", ["Hot", "Thermal", "Inferno", "Magma"], index=0)
         else:
-            cmap_sh = st.selectbox("Colormap", ["Hot", "Thermal", "Inferno", "Magma"], index=0,
-                                   help="Sequential colormap showing temperature intensity")
-
-        st.markdown("**📊 Multi-Temperature Comparison**")
-        show_T_ghost = st.toggle("Show ghost surfaces at T±ΔT", value=False,
-                                 help="Display semi-transparent surfaces at neighboring temperatures")
+            cmap_sh = st.selectbox("Colormap", COLORMAPS, index=COLORMAPS.index("Viridis") if "Viridis" in COLORMAPS else 0)
+        show_T_ghost = st.toggle("Show ghost surfaces at T±ΔT", value=False)
         if show_T_ghost:
             T_delta = st.slider("Temperature offset (K)", 50, 500, 200, 50)
             ghost_opacity = st.slider("Ghost opacity", 0.1, 0.5, 0.2, 0.05)
+
+    # --- Physics-Based SH Parameters ---
+    if render_mode == "Spherical Harmonic Surface (Physics-Based)" and not physics_disabled:
+        st.subheader("⚛️ Physics Model Parameters")
+        
+        # Landau order parameter controls
+        st.markdown("**Landau Order Parameter η(T)**")
+        Tc_default = int(T_min + 0.6 * (T_max - T_min))  # Default: 60% through range
+        Tc = st.slider("Critical temperature Tc (K)", T_min, T_max, Tc_default, 50,
+                       help="Temperature where order parameter η = 0.5 (phase transition midpoint)")
+        delta_T = st.slider("Transition width ΔT (K)", 50, 400, 150, 25,
+                           help="Temperature range over which η transitions from 1→0")
+        
+        # Harmonic truncation limits
+        st.markdown("**Harmonic Expansion Limits**")
+        col1, col2 = st.columns(2)
+        l_max_H = col1.slider("Max l for Enthalpy H", 0, 6, 4)
+        l_max_S = col2.slider("Max l for Entropy S", 0, 6, 3)
+        
+        # Surface geometry controls
+        st.markdown("**Surface Geometry**")
+        base_radius = st.slider("Base radius (ordered state)", 0.2, 0.6, 0.35, 0.01,
+                               help="Sphere radius when η→1 (low T, crystalline)")
+        distortion_amp = st.slider("Distortion amplitude", 0.0, 0.5, 0.15, 0.01,
+                                  help="How strongly G-variations deform the surface")
+        
+        # Visual encoding options
+        st.markdown("**Visual Encoding**")
+        phase_encoding = st.radio("Phase visualization",
+                                  ["Color saturation by |ΔG|/RT", 
+                                   "Curvature overlay for spinodal regions",
+                                   "Combined: saturation + curvature"],
+                                  index=0)
+        show_mobility = st.toggle("Show atomic mobility (lighting)", value=True,
+                                 help="Surface roughness ∝ exp(-Eₐ/RT)")
+        
+        # Resolution
+        sh_n_theta = st.slider("Theta resolution", 30, 150, 80, step=10)
+        sh_n_phi   = st.slider("Phi resolution", 30, 150, 80, step=10)
+        
+        # Build physics model (cached)
+        with st.spinner("Building physics-based SH model..."):
+            physics_model = build_physics_sh_model(df, T_list, 
+                                                  l_max_H=l_max_H, 
+                                                  l_max_S=l_max_S,
+                                                  Tc=Tc, 
+                                                  delta_T=delta_T)
+        
+        if len(physics_model) == 0:
+            st.error("❌ Physics model construction failed. Try adjusting parameters or checking data.")
+            physics_disabled = True
+        else:
+            st.success(f"✅ Physics model built: {len(physics_model)} temperature slices")
+            with st.expander("📊 Model Diagnostics"):
+                st.write(f"**Fitted temperatures:** {sorted(physics_model.keys())}")
+                sample_T = sorted(physics_model.keys())[len(physics_model.keys())//2]
+                st.write(f"**Sample coefficients at T={sample_T}K:**")
+                st.write(f"- H coefficients: {physics_model[sample_T]['n_coeffs_H']}")
+                st.write(f"- S coefficients: {physics_model[sample_T]['n_coeffs_S']}")
 
     # --- Marker-specific options ---
     if render_mode == "Markers (point cloud)":
@@ -503,23 +690,14 @@ with st.sidebar:
         marker_line_width = col1.slider("Outline Width", 0, 5, 0)
         marker_line_color = col2.color_picker("Outline Color", "#000000")
         symbol = st.selectbox("Marker Symbol", SYMBOLS, index=1)
-        scale_size_by_g = st.toggle("Scale size by |G|", value=False,
-                                    help="Marker size ∝ |G| (tensor‑glyph style)")
-
-        st.subheader("🌐 Coordinate System")
-        coord_sys = st.radio("Select",
-                             ["Cartesian (x_Co, x_Cr, x_Fe)", "Spherical (r, θ, φ)"],
-                             index=0)
+        scale_size_by_g = st.toggle("Scale size by |G|", value=False)
 
     # --- Common visualization extras ---
-    st.subheader("🔷 Geometric References")
-    show_ref_sphere = st.toggle("Show Reference Sphere", value=False,
-                                help="Wireframe sphere at max composition radius")
+    st.subheader("🔷 Geometric Aids")
+    show_ref_sphere = st.toggle("Show Reference Sphere", value=False)
     ref_sphere_r = st.slider("Sphere Radius", 0.1, 1.5, 1.0, 0.05) if show_ref_sphere else 1.0
-    show_axes_frame = st.toggle("Show Coordinate Axes", value=False,
-                                help="E(3) coordinate frame arrows at origin")
-    show_simplex = st.toggle("Show Composition Simplex", value=False,
-                             help="Wireframe of the Co-Cr-Fe-Ni tetrahedron boundary")
+    show_axes_frame = st.toggle("Show Coordinate Axes", value=False)
+    show_simplex = st.toggle("Show Composition Simplex", value=False)
 
     st.divider()
 
@@ -561,9 +739,27 @@ if eval_query:
     if comp_sum > 1.0:
         st.error("Cannot evaluate: composition sum exceeds 1.0.")
     else:
-        query_result = evaluate_query_point(df, q_co, q_cr, q_fe, T_query)
-        if query_result is None:
-            st.error("❌ Query point lies outside the convex hull of available data at this temperature.")
+        interp_liq_q, interp_fcc_q, interp_stable_q = build_interpolators_for_T(df, q_t)
+        if interp_liq_q is not None:
+            pt = np.array([[q_co, q_cr, q_fe]])
+            g_liq_q = float(interp_liq_q(pt)[0])
+            g_fcc_q = float(interp_fcc_q(pt)[0])
+
+            if np.isnan(g_liq_q) or np.isnan(g_fcc_q):
+                st.error("❌ Query point lies outside the convex hull of available data.")
+            else:
+                g_stable_q = min(g_liq_q, g_fcc_q)
+                phase_q = "LIQUID" if g_liq_q <= g_fcc_q else "FCC"
+                dG_q = g_liq_q - g_fcc_q
+                query_result = {
+                    "T": q_t, "Co": q_co, "Cr": q_cr, "Fe": q_fe,
+                    "Ni": 1.0 - q_co - q_cr - q_fe,
+                    "G_LIQ": g_liq_q, "G_FCC": g_fcc_q,
+                    "G_stable": g_stable_q, "Phase": phase_q,
+                    "dG": dG_q
+                }
+        else:
+            st.error(f"No interpolator available for T = {q_t} K.")
 
 # ================= DISPLAY QUERY RESULTS =================
 if query_result:
@@ -574,104 +770,174 @@ if query_result:
     c3.metric("G_stable", f"{query_result['G_stable']:,.0f}", "J/mol")
     c4.metric("ΔG", f"{query_result['dG']:,.0f}", "J/mol")
     c5.metric("Stable Phase", query_result['Phase'])
-    c6.metric("η", f"{query_result['eta']:.3f}")
+    c6.metric("x_Ni", f"{query_result['Ni']:.3f}")
 
-    # Physical interpretation
-    eta_q = query_result['eta']
-    if abs(eta_q) < 0.1:
-        st.info(f"⚖️ Near phase boundary (η = {eta_q:.3f}) — coexistence / melting front")
-    elif eta_q < -1.0:
-        st.info(f"🔥 Deep liquid (η = {eta_q:.3f}) — thermodynamically stable melt")
-    elif eta_q > 1.0:
-        st.info(f"❄️ Deep FCC solid (η = {eta_q:.3f}) — thermodynamically stable crystal")
+    T_factor_q = (query_result['T'] - T_min) / T_range if T_range > 0 else 0.5
+    if query_result['Phase'] == "LIQUID":
+        st.info(f"🔥 High-temperature phase (LIQUID). T-factor: {T_factor_q:.2f}")
     else:
-        st.info(f"🔶 Transition region (η = {eta_q:.3f}) — moderate driving force")
+        st.info(f"❄️ Low-temperature phase (FCC). T-factor: {T_factor_q:.2f}")
 
+    if T_val != query_result['T']:
+        st.info(f"ℹ️ The 3D field is rendered at T = {T_val} K; query values are for T = {query_result['T']} K.")
     st.divider()
 
 # ================= MAIN RENDERING =================
+interp_liq, interp_fcc, interp_stable = build_interpolators_for_T(df, T_val)
+
+if interp_liq is None:
+    st.error(f"No data loaded for T = {T_val} K.")
+    st.stop()
+
 fig = go.Figure()
 
-# Compute temperature factor for layout annotations
-T_factor_display = (T_query - T_min) / T_range if T_range > 0 else 0.5
-phase_dominant = "LIQUID-dominated" if T_factor_display > 0.6 else "FCC-dominated" if T_factor_display < 0.4 else "Transition"
+# Compute temperature factor
+T_factor = (T_val - T_min) / T_range if T_range > 0 else 0.5
 
 # ------------------------------------------------------------------
-# MODE 1: SPHERICAL HARMONIC SURFACE (continuous T-field)
+# MODE 3: PHYSICS-BASED SPHERICAL HARMONIC SURFACE
 # ------------------------------------------------------------------
-if render_mode == "Spherical Harmonic Surface (SH)" and SCIPY_AVAILABLE:
+if render_mode == "Spherical Harmonic Surface (Physics-Based)" and SCIPY_AVAILABLE and not physics_disabled:
 
-    # Build continuous field (cached)
-    sh_field_data = build_continuous_sh_field(
-        df, l_max=sh_l_max, R_fixed=sh_R_base,
-        n_theta=sh_n_theta, n_phi=sh_n_phi
-    )
-    splines, T_min_f, T_max_f, l_max_f = sh_field_data
-
-    # Base theta-phi grid
-    theta = np.linspace(0, 2*np.pi, sh_n_theta)
-    phi = np.linspace(0, np.pi, sh_n_phi)
-    TH, PH = np.meshgrid(theta, phi)
-
-    def render_sh_surface_continuous(T_render, opacity=0.9, is_ghost=False, ghost_label=""):
-        """Render SH surface at arbitrary float temperature."""
-        fields = reconstruct_fields_at_t(TH, PH, T_render, splines, l_max_f)
-        G_liq = fields["G_liq"]
-        G_fcc = fields["G_fcc"]
-        dG = fields["dG"]
-        G_stable = np.minimum(G_liq, G_fcc)
-
-        # Physics-based radius with Gibbs–Helmholtz deformation
-        radius, eta, R_0 = compute_physics_radius(
-            dG, T_render, sh_R_base, sh_alpha, sh_w,
-            beta_thermal=sh_beta_thermal, T_ref=sh_T_ref
-        )
-
-        # Cartesian coordinates on the deformed manifold
+    def render_physics_sh_surface(T_render, opacity=0.9, is_ghost=False, ghost_label=""):
+        """Render physics-based SH surface with thermodynamic coupling."""
+        
+        # Get interpolated coefficients
+        coeffs_H, coeffs_S = interpolate_coeffs_across_T(physics_model, T_render)
+        if coeffs_H is None or coeffs_S is None:
+            return False
+        
+        # Get model parameters
+        model_params = physics_model[list(physics_model.keys())[0]]
+        l_max_H = model_params["l_max_H"]
+        l_max_S = model_params["l_max_S"]
+        l_max = max(l_max_H, l_max_S)
+        Tc = model_params["Tc"]
+        delta_T = model_params["delta_T"]
+        
+        # Apply Landau order parameter weighting
+        coeffs_H_weighted, eta = temperature_weighted_coeffs(coeffs_H, l_max, T_render, Tc, delta_T)
+        coeffs_S_weighted, _ = temperature_weighted_coeffs(coeffs_S, l_max, T_render, Tc, delta_T)
+        
+        # Create angular grid
+        theta = np.linspace(0, 2*np.pi, sh_n_theta)
+        phi = np.linspace(0, np.pi, sh_n_phi)
+        TH, PH = np.meshgrid(theta, phi)
+        
+        # Reconstruct G via thermodynamic superposition: G = H - T*S
+        G_recon = reconstruct_G_physics(TH, PH, coeffs_H_weighted, coeffs_S_weighted, T_render, l_max)
+        
+        # Compute dG for phase coloring
+        dG_recon = compute_dG_surface_physics(physics_model, T_render, TH, PH, l_max)
+        
+        # Normalize G for radial deformation
+        G_min = np.nanmin(G_recon)
+        G_max = np.nanmax(G_recon)
+        if G_max > G_min:
+            G_norm = (G_recon - G_min) / (G_max - G_min)
+        else:
+            G_norm = np.zeros_like(G_recon)
+        
+        # Temperature-dependent geometry
+        # Base radius contracts when ordered (low T), expands when disordered (high T)
+        radius_base = base_radius + 0.2 * (1 - eta)  # Thermal expansion proxy
+        radius = radius_base + distortion_amp * eta * G_norm
+        
+        # Convert to Cartesian coordinates
         X = radius * np.sin(PH) * np.cos(TH)
         Y = radius * np.sin(PH) * np.sin(TH)
         Z = radius * np.cos(PH)
-
-        # Determine surface coloring
-        if surface_color_mode == "η = ΔG/RT (dimensionless)":
-            surfacecolor = eta
-            cbar_title = "η = ΔG / RT"
-            eta_abs_max = max(abs(eta.min()), abs(eta.max()))
-            if eta_abs_max < 0.01:
-                eta_abs_max = 1.0
-            cmin = -eta_abs_max
-            cmax = eta_abs_max
-            cmap_use = cmap_sh
-        elif surface_color_mode == "ΔG = G_LIQ - G_FCC (J/mol)":
-            surfacecolor = dG
-            cbar_title = "ΔG (J/mol)"
-            cmin = -dG_global_abs_max
-            cmax = dG_global_abs_max
-            cmap_use = cmap_sh
-        elif surface_color_mode == "Temperature-encoded":
-            surfacecolor = np.full_like(eta, T_render)
-            cbar_title = "Temperature (K)"
-            cmin = T_min
-            cmax = T_max
-            cmap_use = cmap_sh
-        else:  # Stable G
-            surfacecolor = G_stable
-            cbar_title = cbar_title_txt
-            cmin = G_global_min
-            cmax = G_global_max
-            cmap_use = cmap_sh
-
-        surface_name = f"SH surface T={T_render:.0f}K {ghost_label}".strip()
-
+        
+        # Visual encoding based on physics
+        if phase_encoding == "Color saturation by |ΔG|/RT":
+            # HSV: hue=phase, saturation=|ΔG|/RT, value=temperature brightness
+            RT = 8.314 * T_render
+            driving_force = np.clip(np.abs(dG_recon) / RT, 0, 2) / 2
+            
+            hue = np.where(dG_recon < 0, 0.0, 0.67)  # Red=LIQUID (dG<0), Blue=FCC (dG>0)
+            saturation = driving_force
+            value = 0.7 + 0.3 * (T_render - T_min) / (T_max - T_min)
+            
+            # Convert to RGB
+            surfacecolor_rgb = hsv_to_rgb_vectorized(hue, saturation, value)
+            color_mode = "rgb"
+            cbar_title = "|ΔG|/RT (phase driving force)"
+            cmin, cmax = 0, 1
+            
+        elif phase_encoding == "Curvature overlay for spinodal regions":
+            # Compute mean curvature to highlight instability regions
+            curvature = compute_mean_curvature(G_recon, TH, PH)
+            curvature_abs = np.abs(curvature)
+            
+            # Normalize curvature for coloring
+            curv_min = np.nanpercentile(curvature_abs, 5)
+            curv_max = np.nanpercentile(curvature_abs, 95)
+            curv_norm = np.clip((curvature_abs - curv_min) / (curv_max - curv_min + 1e-12), 0, 1)
+            
+            # Color by curvature magnitude (red = high curvature = near spinodal)
+            surfacecolor_rgb = hsv_to_rgb_vectorized(
+                h=np.zeros_like(curv_norm),  # Red hue
+                s=curv_norm,                  # Saturation = curvature
+                v=np.ones_like(curv_norm)     # Full brightness
+            )
+            color_mode = "rgb"
+            cbar_title = "|Mean Curvature| (instability indicator)"
+            cmin, cmax = 0, 1
+            
+        else:  # Combined: saturation + curvature
+            RT = 8.314 * T_render
+            driving_force = np.clip(np.abs(dG_recon) / RT, 0, 2) / 2
+            curvature = compute_mean_curvature(G_recon, TH, PH)
+            curvature_abs = np.abs(curvature)
+            curv_min = np.nanpercentile(curvature_abs, 5)
+            curv_max = np.nanpercentile(curvature_abs, 95)
+            curv_norm = np.clip((curvature_abs - curv_min) / (curv_max - curv_min + 1e-12), 0, 1)
+            
+            # Combined encoding: hue=phase, saturation=driving_force * (1 + curvature)
+            hue = np.where(dG_recon < 0, 0.0, 0.67)
+            saturation = np.clip(driving_force * (1 + 0.5 * curv_norm), 0, 1)
+            value = 0.7 + 0.3 * (T_render - T_min) / (T_max - T_min)
+            
+            surfacecolor_rgb = hsv_to_rgb_vectorized(hue, saturation, value)
+            color_mode = "rgb"
+            cbar_title = "Combined: |ΔG|/RT × (1+|κ|)"
+            cmin, cmax = 0, 1
+        
+        # Temperature-dependent rendering properties
+        if show_mobility:
+            # Atomic mobility proxy: Arrhenius behavior
+            E_a = 150e3  # Activation energy ~150 kJ/mol (typical for metallic diffusion)
+            R_gas = 8.314
+            mobility = np.exp(-E_a / (R_gas * T_render))
+            
+            # Map mobility to surface properties
+            surface_roughness = 0.2 + 0.7 * (1 - mobility)  # Low T: smooth/specular
+            surface_diffuse = 0.3 if mobility < 0.1 else 0.6  # High T: more diffuse
+            surface_opacity = opacity * (0.7 + 0.3 * mobility)  # More transparent when mobile
+        else:
+            surface_roughness = 0.4
+            surface_diffuse = 0.5
+            surface_opacity = opacity
+        
+        # Surface name and colorbar settings
+        if is_ghost:
+            surface_name = f"T={T_render}K {ghost_label}"
+            show_scale = False
+            surface_opacity *= 0.5
+        else:
+            surface_name = f"Physics-SH: T={T_render}K, η={eta:.2f}"
+            show_scale = True
+        
+        # Add surface trace
         fig.add_trace(go.Surface(
             x=X, y=Y, z=Z,
-            surfacecolor=surfacecolor,
-            colorscale=cmap_use,
-            cmin=cmin,
-            cmax=cmax,
-            opacity=opacity,
+            surfacecolor=surfacecolor_rgb if color_mode=="rgb" else G_recon,
+            colorscale=cmap_sh if color_mode=="scale" else None,
+            cmin=cmin if color_mode=="rgb" else G_global_min,
+            cmax=cmax if color_mode=="rgb" else G_global_max,
+            opacity=surface_opacity,
             name=surface_name,
-            showscale=not is_ghost,
+            showscale=show_scale,
             colorbar=dict(
                 title=dict(text=cbar_title, font=dict(size=cbar_title_size)),
                 thickness=cbar_thickness,
@@ -679,60 +945,176 @@ if render_mode == "Spherical Harmonic Surface (SH)" and SCIPY_AVAILABLE:
                 tickfont=dict(size=cbar_tick_size),
                 xpad=cbar_xpad,
                 ypad=cbar_ypad
-            ) if not is_ghost else None,
+            ) if show_scale else None,
             hovertemplate=(
                 f"<b>{surface_name}</b><br>"
-                f"η = %{{surfacecolor:.3f}}<<br>"
-                f"G_stable = {G_stable.mean():,.0f} J/mol (avg)<br>"
-                f"T = {T_render:.0f} K<br>"
+                f"G = %{{z:.1f}} (radius)<br>"
+                f"η = {eta:.2f}<br>"
                 f"<extra></extra>"
             ) if not is_ghost else None,
-            lighting=dict(ambient=0.6, diffuse=0.4, roughness=0.5),
+            lighting=dict(
+                ambient=0.5,
+                diffuse=surface_diffuse,
+                roughness=surface_roughness,
+                specular=0.3 if eta > 0.5 else 0.1,
+                fresnel=1.0
+            ),
             lightposition=dict(x=100, y=100, z=50)
         ))
-
-        # Phase boundary: η ≈ 0 naturally sits at radius R_0 (undeformed sphere)
-        if not is_ghost:
-            eta_threshold = 0.05
-            mask_b = np.abs(eta) < eta_threshold
-            if np.any(mask_b):
-                X_b = R_0 * np.sin(PH[mask_b]) * np.cos(TH[mask_b])
-                Y_b = R_0 * np.sin(PH[mask_b]) * np.sin(TH[mask_b])
-                Z_b = R_0 * np.cos(PH[mask_b])
-                fig.add_trace(go.Scatter3d(
-                    x=X_b, y=Y_b, z=Z_b,
-                    mode="markers",
-                    marker=dict(
-                        size=7, color="gold", symbol="diamond",
-                        line=dict(width=2, color="black"), opacity=0.95
-                    ),
-                    name=f"Phase Boundary (η≈0) @ {T_render:.0f}K",
-                    hovertemplate=(
-                        f"<b>Phase Boundary</b><br>"
-                        f"T = {T_render:.0f} K<br>"
-                        f"η ≈ 0 (ΔG ≈ 0)<br>"
-                        f"<extra></extra>"
-                    )
-                ))
         return True
 
-    # Main surface at unified query T
-    success = render_sh_surface_continuous(T_query, opacity=0.9)
+    # Render main surface
+    success = render_physics_sh_surface(T_val, opacity=0.92)
 
-    # Ghost surfaces at neighboring temperatures
-    if show_T_ghost and success:
-        if T_query - T_delta >= T_min:
-            render_sh_surface_continuous(T_query - T_delta, opacity=ghost_opacity,
-                                         is_ghost=True, ghost_label="(cold)")
-        if T_query + T_delta <= T_max:
-            render_sh_surface_continuous(T_query + T_delta, opacity=ghost_opacity,
-                                         is_ghost=True, ghost_label="(hot)")
+    # Render ghost surfaces if enabled (for empirical mode compatibility)
+    # In physics mode, we could show T±ΔT for comparison
+    if 'show_T_ghost' in locals() and show_T_ghost and success:
+        T_ghost_list = []
+        if T_val - T_delta >= T_min:
+            T_ghost_list.append((T_val - T_delta, "(cold)"))
+        if T_val + T_delta <= T_max:
+            T_ghost_list.append((T_val + T_delta, "(hot)"))
+
+        for T_ghost, label in T_ghost_list:
+            render_physics_sh_surface(T_ghost, opacity=0.3, is_ghost=True, ghost_label=label)
+
+    if not success:
+        st.warning("Physics-based SH rendering failed. Try adjusting harmonic limits or temperature parameters.")
+        
+        # Fallback: show empirical mode parameters as hint
+        st.info("💡 Tip: Ensure your CSV data spans sufficient temperature range for derivative estimation.")
+
+# ------------------------------------------------------------------
+# MODE 2: EMPIRICAL SPHERICAL HARMONIC SURFACE
+# ------------------------------------------------------------------
+elif render_mode == "Spherical Harmonic Surface (Empirical)" and SCIPY_AVAILABLE and not sh_disabled:
+
+    def render_sh_surface(T_render, opacity=0.9, is_ghost=False, ghost_label=""):
+        """Render empirical SH surface (original implementation)."""
+        interp_liq_T, interp_fcc_T, _ = build_interpolators_for_T(df, T_render)
+        if interp_liq_T is None:
+            return False
+
+        TH, PH, G_vals, dG_vals, valid_mask = sample_g_on_sphere(
+            interp_liq_T, interp_fcc_T, sh_R_fixed,
+            n_theta=sh_n_theta, n_phi=sh_n_phi
+        )
+
+        if not np.any(valid_mask):
+            return False
+
+        coeffs, l_max_used = fit_sh_coeffs(TH, PH, G_vals, l_max=sh_l_max)
+        if coeffs is None:
+            return False
+
+        G_smooth = reconstruct_sh_surface(TH, PH, coeffs, l_max_used)
+
+        T_local_factor = (T_render - T_min) / T_range if T_range > 0 else 0.5
+        alpha_effective = sh_alpha * (1.0 + 0.5 * np.sin(np.pi * T_local_factor))
+
+        G_min = G_smooth.min()
+        G_max = G_smooth.max()
+        if G_max > G_min:
+            G_norm = (G_smooth - G_min) / (G_max - G_min)
+        else:
+            G_norm = np.zeros_like(G_smooth)
+
+        radius = sh_R_fixed + alpha_effective * G_norm
+        thermal_expansion = 1.0 + 0.1 * T_local_factor
+        radius *= thermal_expansion
+
+        X = radius * np.sin(PH) * np.cos(TH)
+        Y = radius * np.sin(PH) * np.sin(TH)
+        Z = radius * np.cos(PH)
+
+        if surface_color_mode == "ΔG = G_LIQ - G_FCC (phase indicator)":
+            coeffs_dG, _ = fit_sh_coeffs(TH, PH, dG_vals, l_max=sh_l_max)
+            if coeffs_dG is not None:
+                surfacecolor = reconstruct_sh_surface(TH, PH, coeffs_dG, l_max_used)
+                surfacecolor = np.clip(surfacecolor, -dG_global_abs_max, dG_global_abs_max)
+                cbar_title = "ΔG = G_LIQ - G_FCC (J/mol)"
+                cmin = -dG_global_abs_max
+                cmax = dG_global_abs_max
+            else:
+                surfacecolor = G_smooth
+                cbar_title = cbar_title_txt
+                cmin = G_global_min
+                cmax = G_global_max
+        elif surface_color_mode == "Temperature-encoded":
+            surfacecolor = np.full_like(G_smooth, T_render)
+            cbar_title = "Temperature (K)"
+            cmin = T_min
+            cmax = T_max
+        else:
+            surfacecolor = G_smooth
+            cbar_title = cbar_title_txt
+            cmin = G_global_min
+            cmax = G_global_max
+
+        if is_ghost:
+            surface_name = f"T={T_render}K {ghost_label}"
+            surface_opacity = ghost_opacity
+            show_scale = False
+        else:
+            surface_name = f"SH surface (T={T_render}K)"
+            surface_opacity = opacity
+            show_scale = True
+
+        if T_local_factor < 0.3:
+            surface_roughness = 0.3
+            lighting_effect = "specular"
+        elif T_local_factor > 0.7:
+            surface_roughness = 0.8
+            lighting_effect = "diffuse"
+        else:
+            surface_roughness = 0.5
+            lighting_effect = "flat"
+
+        fig.add_trace(go.Surface(
+            x=X, y=Y, z=Z,
+            surfacecolor=surfacecolor,
+            colorscale=cmap_sh,
+            cmin=cmin,
+            cmax=cmax,
+            opacity=surface_opacity,
+            name=surface_name,
+            showscale=show_scale,
+            colorbar=dict(
+                title=dict(text=cbar_title, font=dict(size=cbar_title_size)),
+                thickness=cbar_thickness,
+                len=cbar_len,
+                tickfont=dict(size=cbar_tick_size),
+                xpad=cbar_xpad,
+                ypad=cbar_ypad
+            ) if show_scale else None,
+            hovertemplate=(
+                f"<b>{surface_name}</b><br>"
+                f"G_stable = %{{surfacecolor:,.0f}} J/mol<br>"
+                f"T = {T_render} K<br>"
+                f"<extra></extra>"
+            ) if not is_ghost else None,
+            lighting=dict(ambient=0.6, diffuse=0.4, roughness=surface_roughness),
+            lightposition=dict(x=100, y=100, z=50)
+        ))
+        return True
+
+    success = render_sh_surface(T_val, opacity=0.9)
+
+    if 'show_T_ghost' in locals() and show_T_ghost and success:
+        T_ghost_list = []
+        if T_val - T_delta >= T_min:
+            T_ghost_list.append((T_val - T_delta, "(cold)"))
+        if T_val + T_delta <= T_max:
+            T_ghost_list.append((T_val + T_delta, "(hot)"))
+
+        for T_ghost, label in T_ghost_list:
+            render_sh_surface(T_ghost, opacity=ghost_opacity, is_ghost=True, ghost_label=label)
 
     if not success:
         st.warning("Spherical harmonic fitting failed. Try adjusting parameters.")
 
 # ------------------------------------------------------------------
-# MODE 2: MARKER POINT CLOUD
+# MODE 1: MARKER POINT CLOUD
 # ------------------------------------------------------------------
 else:
     # Generate tetrahedral grid
@@ -742,9 +1124,8 @@ else:
     valid_mask = (grid_pts[:, 0] + grid_pts[:, 1] + grid_pts[:, 2]) <= 1.0
     pts_valid = grid_pts[valid_mask]
 
-    # Interpolate to the unified T_query
-    G_liq, G_fcc = interpolate_grid_to_t(pts_valid, df, T_query)
-
+    G_liq = interp_liq(pts_valid)
+    G_fcc = interp_fcc(pts_valid)
     valid_eval = ~np.isnan(G_liq) & ~np.isnan(G_fcc)
     pts = pts_valid[valid_eval]
     G_liq = G_liq[valid_eval]
@@ -752,152 +1133,135 @@ else:
     G_stable = np.minimum(G_liq, G_fcc)
     stable_label = np.where(G_liq <= G_fcc, "LIQUID", "FCC")
     dG = G_liq - G_fcc
-    eta = dG / (R_GAS * T_query) if T_query > 0 else np.zeros_like(dG)
 
-    if render_mode == "Markers (point cloud)":
-        if coord_sys == "Spherical (r, θ, φ)":
-            r, theta, phi = cartesian_to_spherical(pts[:, 0], pts[:, 1], pts[:, 2])
-            x_data, y_data, z_data = r, theta, phi
-            x_title, y_title, z_title = "r", "θ (rad)", "φ (rad)"
-            if query_result:
-                x_q, y_q, z_q = cartesian_to_spherical(
-                    np.array([query_result["Co"]]),
-                    np.array([query_result["Cr"]]),
-                    np.array([query_result["Fe"]])
-                )
-            else:
-                x_q = y_q = z_q = np.array([np.nan])
-        else:
-            x_data, y_data, z_data = pts[:, 0], pts[:, 1], pts[:, 2]
-            x_title, y_title, z_title = "x<sub>Co</sub>", "x<sub>Cr</sub>", "x<sub>Fe</sub>"
-            if query_result:
-                x_q = np.array([query_result["Co"]])
-                y_q = np.array([query_result["Cr"]])
-                z_q = np.array([query_result["Fe"]])
-            else:
-                x_q = y_q = z_q = np.array([np.nan])
-
-        if scale_size_by_g:
-            g_norm = np.abs(G_stable)
-            g_min, g_max = g_norm.min(), g_norm.max()
-            if g_max > g_min:
-                sizes = 2 + 8 * (g_norm - g_min) / (g_max - g_min)
-            else:
-                sizes = np.full_like(g_norm, marker_size)
-        else:
-            sizes = np.full(len(G_stable), marker_size)
-
-        def make_marker_config(color_data, size_data, cbar_title):
-            return dict(
-                size=size_data,
-                color=color_data,
-                colorscale=cmap,
-                opacity=opacity,
-                symbol=symbol,
-                line=dict(width=marker_line_width, color=marker_line_color),
-                colorbar=dict(
-                    title=dict(text=cbar_title, font=dict(size=cbar_title_size)),
-                    thickness=cbar_thickness,
-                    len=cbar_len,
-                    tickfont=dict(size=cbar_tick_size),
-                    xpad=cbar_xpad,
-                    ypad=cbar_ypad
-                )
+    if coord_sys == "Spherical (r, θ, φ)":
+        r, theta, phi = cartesian_to_spherical(pts[:, 0], pts[:, 1], pts[:, 2])
+        x_data, y_data, z_data = r, theta, phi
+        x_title, y_title, z_title = "r", "θ (rad)", "φ (rad)"
+        if query_result:
+            x_q, y_q, z_q = cartesian_to_spherical(
+                np.array([query_result["Co"]]),
+                np.array([query_result["Cr"]]),
+                np.array([query_result["Fe"]])
             )
-
-        if show_phase == "Stable Phase (Min G)":
-            fig.add_trace(go.Scatter3d(
-                x=x_data, y=y_data, z=z_data,
-                mode="markers",
-                marker=make_marker_config(G_stable, sizes, cbar_title_txt),
-                name="Stable Phase",
-                hovertemplate=(f"<b>Stable</b><br>{x_title}=%{{x:.3f}}<<br>{y_title}=%{{y:.3f}}<<br>"
-                               f"{z_title}=%{{z:.3f}}<<br>G=%{{marker.color:,.0f}} J/mol<br>"
-                               f"Phase=%{{text}}<<extra></extra>"),
-                text=stable_label
-            ))
-        elif show_phase == "LIQUID Only":
-            fig.add_trace(go.Scatter3d(
-                x=x_data, y=y_data, z=z_data,
-                mode="markers",
-                marker=make_marker_config(G_liq, sizes, cbar_title_txt),
-                name="LIQUID",
-                hovertemplate=(f"<b>LIQUID</b><br>{x_title}=%{{x:.3f}}<<br>{y_title}=%{{y:.3f}}<<br>"
-                               f"{z_title}=%{{z:.3f}}<<br>G_LIQ=%{{marker.color:,.0f}} J/mol<<extra></extra>")
-            ))
-        elif show_phase == "FCC Only":
-            fig.add_trace(go.Scatter3d(
-                x=x_data, y=y_data, z=z_data,
-                mode="markers",
-                marker=make_marker_config(G_fcc, sizes, cbar_title_txt),
-                name="FCC",
-                hovertemplate=(f"<b>FCC</b><br>{x_title}=%{{x:.3f}}<<br>{y_title}=%{{y:.3f}}<<br>"
-                               f"{z_title}=%{{z:.3f}}<<br>G_FCC=%{{marker.color:,.0f}} J/mol<<extra></extra>")
-            ))
-        else:  # Both Phases Overlay
-            fig.add_trace(go.Scatter3d(
-                x=x_data, y=y_data, z=z_data,
-                mode="markers",
-                marker=make_marker_config(G_liq, sizes, cbar_title_txt.replace("G", "G_LIQ")),
-                name="LIQUID"
-            ))
-            fig.add_trace(go.Scatter3d(
-                x=x_data, y=y_data, z=z_data,
-                mode="markers",
-                marker=make_marker_config(G_fcc, sizes, cbar_title_txt.replace("G", "G_FCC")),
-                name="FCC"
-            ))
-
-# ------------------------------------------------------------------
-# COMMON ELEMENTS (Query point, composition vector, SH probe, e3nn shapes)
-# ------------------------------------------------------------------
-
-# Query point overlay (always diamond)
-if query_result is not None:
-    # Determine coordinates for query point depending on current mode
-    if render_mode == "Markers (point cloud)" and coord_sys == "Spherical (r, θ, φ)":
-        x_q, y_q, z_q = cartesian_to_spherical(
-            np.array([query_result["Co"]]),
-            np.array([query_result["Cr"]]),
-            np.array([query_result["Fe"]])
-        )
+        else:
+            x_q = y_q = z_q = np.array([np.nan])
     else:
-        x_q = np.array([query_result["Co"]])
-        y_q = np.array([query_result["Cr"]])
-        z_q = np.array([query_result["Fe"]])
+        x_data, y_data, z_data = pts[:, 0], pts[:, 1], pts[:, 2]
+        x_title, y_title, z_title = "x<sub>Co</sub>", "x<sub>Cr</sub>", "x<sub>Fe</sub>"
+        if query_result:
+            x_q = np.array([query_result["Co"]])
+            y_q = np.array([query_result["Cr"]])
+            z_q = np.array([query_result["Fe"]])
+        else:
+            x_q = y_q = z_q = np.array([np.nan])
 
-    if not np.isnan(x_q[0]):
+    if scale_size_by_g:
+        g_norm = np.abs(G_stable)
+        g_min, g_max = g_norm.min(), g_norm.max()
+        if g_max > g_min:
+            sizes = 2 + 8 * (g_norm - g_min) / (g_max - g_min)
+        else:
+            sizes = np.full_like(g_norm, marker_size)
+    else:
+        sizes = np.full(len(G_stable), marker_size)
+
+    def make_marker_config(color_data, size_data, cbar_title):
+        return dict(
+            size=size_data,
+            color=color_data,
+            colorscale=cmap,
+            opacity=opacity,
+            symbol=symbol,
+            line=dict(width=marker_line_width, color=marker_line_color),
+            colorbar=dict(
+                title=dict(text=cbar_title, font=dict(size=cbar_title_size)),
+                thickness=cbar_thickness,
+                len=cbar_len,
+                tickfont=dict(size=cbar_tick_size),
+                xpad=cbar_xpad,
+                ypad=cbar_ypad
+            )
+        )
+
+    if show_phase == "Stable Phase (Min G)":
         fig.add_trace(go.Scatter3d(
-            x=x_q, y=y_q, z=z_q,
+            x=x_data, y=y_data, z=z_data,
             mode="markers",
-            marker=dict(size=14, color="red", symbol="diamond",
-                        line=dict(width=2, color="white")),
-            name="Query Point",
-            hovertemplate=(f"<b>QUERY POINT</b><br>T={query_result['T']} K<br>"
-                           f"x_Co={query_result['Co']:.3f}<br>x_Cr={query_result['Cr']:.3f}<br>"
-                           f"x_Fe={query_result['Fe']:.3f}<br>x_Ni={query_result['Ni']:.3f}<br>"
-                           f"G_stable={query_result['G_stable']:,.0f} J/mol<br>"
-                           f"ΔG={query_result['dG']:,.0f} J/mol<br>"
-                           f"η={query_result['eta']:.3f}<br>"
-                           f"Phase={query_result['Phase']}<<extra></extra>")
+            marker=make_marker_config(G_stable, sizes, cbar_title_txt),
+            name="Stable Phase",
+            hovertemplate=(f"<b>Stable</b><br>{x_title}=%{{x:.3f}}<br>{y_title}=%{{y:.3f}}<br>"
+                           f"{z_title}=%{{z:.3f}}<br>G=%{{marker.color:,.0f}} J/mol<br>"
+                           f"Phase=%{{text}}<extra></extra>"),
+            text=stable_label
+        ))
+    elif show_phase == "LIQUID Only":
+        fig.add_trace(go.Scatter3d(
+            x=x_data, y=y_data, z=z_data,
+            mode="markers",
+            marker=make_marker_config(G_liq, sizes, cbar_title_txt),
+            name="LIQUID",
+            hovertemplate=(f"<b>LIQUID</b><br>{x_title}=%{{x:.3f}}<br>{y_title}=%{{y:.3f}}<br>"
+                           f"{z_title}=%{{z:.3f}}<br>G_LIQ=%{{marker.color:,.0f}} J/mol<extra></extra>")
+        ))
+    elif show_phase == "FCC Only":
+        fig.add_trace(go.Scatter3d(
+            x=x_data, y=y_data, z=z_data,
+            mode="markers",
+            marker=make_marker_config(G_fcc, sizes, cbar_title_txt),
+            name="FCC",
+            hovertemplate=(f"<b>FCC</b><br>{x_title}=%{{x:.3f}}<br>{y_title}=%{{y:.3f}}<br>"
+                           f"{z_title}=%{{z:.3f}}<br>G_FCC=%{{marker.color:,.0f}} J/mol<extra></extra>")
+        ))
+    else:  # Both Phases Overlay
+        fig.add_trace(go.Scatter3d(
+            x=x_data, y=y_data, z=z_data,
+            mode="markers",
+            marker=make_marker_config(G_liq, sizes, cbar_title_txt.replace("G", "G_LIQ")),
+            name="LIQUID"
+        ))
+        fig.add_trace(go.Scatter3d(
+            x=x_data, y=y_data, z=z_data,
+            mode="markers",
+            marker=make_marker_config(G_fcc, sizes, cbar_title_txt.replace("G", "G_FCC")),
+            name="FCC"
         ))
 
-# Spherical harmonics probe with η-dependent styling
+# ------------------------------------------------------------------
+# COMMON ELEMENTS (Query point, composition vector, SH probe, geometric aids)
+# ------------------------------------------------------------------
+
+# Query point overlay
+if query_result is not None and not np.isnan(x_q[0]):
+    fig.add_trace(go.Scatter3d(
+        x=x_q, y=y_q, z=z_q,
+        mode="markers",
+        marker=dict(size=14, color="red", symbol="diamond",
+                    line=dict(width=2, color="white")),
+        name="Query Point",
+        hovertemplate=(f"<b>QUERY POINT</b><br>T={query_result['T']} K<br>"
+                       f"x_Co={query_result['Co']:.3f}<br>x_Cr={query_result['Cr']:.3f}<br>"
+                       f"x_Fe={query_result['Fe']:.3f}<br>x_Ni={query_result['Ni']:.3f}<br>"
+                       f"G_stable={query_result['G_stable']:,.0f} J/mol<br>"
+                       f"ΔG={query_result['dG']:,.0f} J/mol<br>"
+                       f"Phase={query_result['Phase']}<extra></extra>")
+    ))
+
+# Spherical harmonics probe with temperature-dependent styling
 if query_result is not None and show_sh_probe:
     qx, qy, qz = query_result["Co"], query_result["Cr"], query_result["Fe"]
-    eta_q = query_result.get("eta", 0.0)
+    g_val = abs(query_result["G_stable"])
+    g_max_all = max(abs(df["G_LIQ"]).max(), abs(df["G_FCC"]).max())
 
-    # Radius scales with thermodynamic depth |η|
-    eta_depth = min(abs(eta_q), 5.0) / 5.0  # cap at 5
-    radius = sh_probe_scale * (0.5 + 0.5 * eta_depth)
+    T_query_factor = (query_result['T'] - T_min) / T_range if T_range > 0 else 0.5
+    radius = sh_probe_scale * (0.5 + 0.5 * g_val / g_max_all) * (1.0 + 0.3 * T_query_factor) if g_max_all > 0 else sh_probe_scale
 
-    # Color: red liquid / blue FCC / gold transition
-    if eta_q < -0.5:
-        phase_color = "#e74c3c"
-    elif eta_q > 0.5:
-        phase_color = "#3498db"
+    if query_result["Phase"] == "LIQUID":
+        base_color = "#e74c3c"
+        phase_color = f"rgb(255, {int(100 * (1 - T_query_factor))}, {int(100 * (1 - T_query_factor))})"
     else:
-        phase_color = "#f39c12"
+        base_color = "#3498db"
+        phase_color = f"rgb({int(100 * T_query_factor)}, {int(150 * T_query_factor)}, 255)"
 
     u = np.linspace(0, 2 * np.pi, 30)
     v = np.linspace(0, np.pi, 30)
@@ -907,14 +1271,15 @@ if query_result is not None and show_sh_probe:
 
     fig.add_trace(go.Surface(
         x=x_sh, y=y_sh, z=z_sh,
-        opacity=0.3,
+        opacity=0.25 + 0.15 * T_query_factor,
         colorscale=[[0, phase_color], [1, phase_color]],
         showscale=False,
-        name=f"SH Probe (η={eta_q:.2f})",
-        hovertemplate=(f"<b>SH Probe</b><br>"
-                       f"η = {eta_q:.3f}<br>"
-                       f"Phase = {query_result['Phase']}<<br>"
-                       f"Radius = {radius:.4f}<extra></extra>")
+        name=f"SH l=0 ({query_result['Phase']}, T={query_result['T']}K)",
+        hovertemplate=(f"<b>Spherical Harmonic l=0</b><br>"
+                       f"G_stable={query_result['G_stable']:,.0f} J/mol<br>"
+                       f"Phase={query_result['Phase']}<br>"
+                       f"T={query_result['T']} K<br>"
+                       f"Radius={radius:.4f}<extra></extra>")
     ))
 
     n_probe = 12
@@ -957,7 +1322,7 @@ if query_result is not None and show_comp_vector:
         hoverinfo="skip"
     ))
 
-# e3nn Reference Sphere
+# Reference sphere
 if show_ref_sphere:
     u = np.linspace(0, 2 * np.pi, 50)
     v = np.linspace(0, np.pi, 50)
@@ -1050,6 +1415,28 @@ else:
     scene_y_title = "x<sub>Cr</sub>"
     scene_z_title = "x<sub>Fe</sub>"
 
+# Temperature-dependent title with physics context
+T_factor_display = (T_val - T_min) / T_range if T_range > 0 else 0.5
+
+if render_mode == "Spherical Harmonic Surface (Physics-Based)" and not physics_disabled:
+    # Compute order parameter for title
+    model_params = physics_model[list(physics_model.keys())[0]]
+    Tc = model_params["Tc"]
+    delta_T = model_params["delta_T"]
+    eta_display = 1.0 / (1.0 + np.exp((T_val - Tc) / delta_T))
+    
+    if eta_display > 0.7:
+        phase_char = "Crystalline FCC (ordered)"
+    elif eta_display < 0.3:
+        phase_char = "Isotropic LIQUID (disordered)"
+    else:
+        phase_char = "Phase transition region"
+    
+    title_text = f"Physics-SH: G=H-TS at T={T_val}K | η={eta_display:.2f} | {phase_char}"
+else:
+    phase_dominant = "LIQUID-dominated" if T_factor_display > 0.6 else "FCC-dominated" if T_factor_display < 0.4 else "Transition"
+    title_text = f"Gibbs Energy at T = {T_val} K ({phase_dominant}) | Mode: {render_mode}"
+
 fig.update_layout(
     template=template if template != "none" else None,
     scene=dict(
@@ -1059,10 +1446,7 @@ fig.update_layout(
         aspectmode="cube",
         camera=dict(eye=dict(x=1.5, y=1.5, z=1.2))
     ),
-    title=dict(
-        text=f"Gibbs–Helmholtz Tensor at T = {T_query} K ({phase_dominant}) | Mode: {render_mode}",
-        font=dict(size=title_font)
-    ),
+    title=dict(text=title_text, font=dict(size=title_font)),
     margin=dict(l=0, r=0, b=0, t=50),
     legend=dict(yanchor="top", y=0.99, xanchor="left", x=0.01, bgcolor="rgba(255,255,255,0.7)")
 )
@@ -1079,36 +1463,69 @@ if render_mode == "Markers (point cloud)":
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Min G (Stable)", f"{G_stable.min():,.0f} J/mol")
     col2.metric("Max G", f"{G_stable.max():,.0f} J/mol")
-    col3.metric("Mean |η|", f"{np.mean(np.abs(eta)):.2f}")
+    col3.metric("Mean |G|", f"{np.mean(np.abs(G_stable)):,.0f} J/mol")
     if show_phase in ["Stable Phase (Min G)", "Both Phases Overlay"]:
         liq_pct = np.sum(G_liq <= G_fcc) / len(G_liq) * 100
         col4.metric("LIQUID Region", f"{liq_pct:.1f}%")
     else:
         col4.metric("Points Rendered", f"{len(pts):,}")
 
-else:
-    st.subheader("📊 Spherical Harmonic Surface Statistics")
+elif render_mode == "Spherical Harmonic Surface (Empirical)":
+    st.subheader("📊 Empirical SH Surface Statistics")
     col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Temperature", f"{T_query} K")
-    col2.metric("T-factor", f"{T_factor_display:.2f}")
+    col1.metric("Temperature", f"{T_val} K")
+    col2.metric("T-factor", f"{T_factor:.2f}")
     col3.metric("Distortion α", f"{sh_alpha:.2f}")
     col4.metric("Harmonic l_max", f"{sh_l_max}")
 
-    # Reconstruct surface fields quickly for stats
-    if SCIPY_AVAILABLE and 'splines' in locals():
-        fields = reconstruct_fields_at_t(TH, PH, T_query, splines, l_max_f)
-        dG_surf = fields["dG"]
-        eta_surf = dG_surf / (R_GAS * T_query)
-        col1.metric("Mean |η|", f"{np.mean(np.abs(eta_surf)):.2f}")
-        col2.metric("Phase boundary pts", f"{np.sum(np.abs(eta_surf) < 0.05):,}")
-        col3.metric("Max |η|", f"{np.max(np.abs(eta_surf)):.2f}")
-        col4.metric("Min η", f"{np.min(eta_surf):.2f}")
-
+else:  # Physics-based mode
+    st.subheader("⚛️ Physics-Based SH Model Statistics")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    # Compute order parameter
+    model_params = physics_model[list(physics_model.keys())[0]]
+    Tc = model_params["Tc"]
+    delta_T = model_params["delta_T"]
+    eta = 1.0 / (1.0 + np.exp((T_val - Tc) / delta_T))
+    
+    col1.metric("Temperature", f"{T_val} K")
+    col2.metric("Order parameter η", f"{eta:.3f}")
+    col3.metric("Effective l_max", f"{int(eta * max(l_max_H, l_max_S))}")
+    col4.metric("Model slices", f"{len(physics_model)}")
+    
+    # Physics interpretation panel
+    with st.expander("📖 Physics Interpretation"):
+        st.markdown(f"""
+        **Thermodynamic Decomposition at T = {T_val} K:**
+        
+        - **Order parameter η = {eta:.3f}**: 
+          - η → 1: Crystalline order (FCC), sharp angular features
+          - η → 0: Liquid disorder, isotropic smooth surface
+          
+        - **Harmonic truncation**: High-l terms suppressed by factor η^l
+          - Enthalpy H: retains features up to l ≈ {int(eta * l_max_H)}
+          - Entropy S: retains features up to l ≈ {int(eta * l_max_S)}
+          
+        - **Visual encoding**:
+          - Color saturation ∝ |ΔG|/RT: stronger driving force = more saturated
+          - Surface roughness ∝ atomic mobility: exp(-Eₐ/RT)
+          - Curvature highlights: regions near spinodal decomposition
+        
+        **Landau parameters**: Tc = {Tc} K, ΔT = {delta_T} K
+        """)
+    
+    # Temperature evolution hint
     st.info(f"""
-    **Physics Summary:**
-    - **η = ΔG / RT**: dimensionless phase driving force
-    - **η ≈ 0** (gold markers): Phase boundary where LIQUID and FCC coexist
-    - **η < 0** (red surface): LIQUID stable — sphere contracts (fluid-like)
-    - **η > 0** (blue surface): FCC stable — sphere expands (crystalline)
-    - **Thermal expansion**: Base radius $R_0$ scales with $(1 + \\beta \\Delta T/T_{{ref}})$
+    **Temperature Evolution Preview:**
+    - **Low T ({T_min}K)**: η ≈ 1.0 → FCC-dominated, crystalline facets, high-l harmonics active
+    - **Current T ({T_val}K)**: η = {eta:.2f} → {phase_char}
+    - **High T ({T_max}K)**: η ≈ 0.0 → LIQUID-dominated, smooth sphere, only l=0,1 survive
     """)
+
+# ================= FOOTER =================
+st.divider()
+st.caption("""
+**Physics-Based Mode**: Implements G(x,T) = H(x) - T·S(x) decomposition with Landau order parameter η(T) 
+for thermodynamically-consistent spherical harmonics visualization. 
+Code by Dr. Sasikumar Subramanian | Functional Materials Research
+""")
