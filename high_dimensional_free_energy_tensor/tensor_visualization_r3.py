@@ -479,7 +479,7 @@ def main():
         st.subheader("🌡️ Visualization")
         T_val = st.select_slider("Field T (K)", options=T_list, 
                                 value=T_list[len(T_list)//2], key="T_viz")
-        grid_res = st.slider("Grid Resolution", 15, 40, 25, step=5, key="grid_res")
+        grid_res = st.slider("Grid Resolution", 15, 500, 25, step=5, key="grid_res")
         
         st.divider()
         
