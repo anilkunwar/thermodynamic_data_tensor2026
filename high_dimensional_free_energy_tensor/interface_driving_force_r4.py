@@ -1181,3 +1181,22 @@ if st.sidebar.checkbox("❓ Show Help & Troubleshooting", value=False):
     - ✅ Build interpolators once at startup
     - ✅ Cache is cleared after 1 hour of inactivity
     **Data Requirements:**
+    ```
+    csv_files/
+    ├── Gibbs_800K.csv
+    ├── Gibbs_1000K.csv
+    ├── Gibbs_1200K.csv
+    └── ...
+    Each CSV must have columns: Co, Cr, Fe, Ni, G_LIQ, G_FCC
+    (mole fractions must sum to 1.0 ± 1e-6)
+    ```
+    **Grain Size Method:**
+    - $S_v = k/d$ where $d$ is grain size [m] and $k$ is shape factor
+    - $k=2$: Spherical grains | $k=3$: Tetrakaidecahedron (metals) | $k=6$: Cubic
+    - $A_{{total}} = S_v \\times V_{{sample}}$
+    - $F_{{total}} = \\Delta G_v \\times A_{{total}}$
+    **Export Options:**
+    - 📊 Charts: Hover → Camera icon (Plotly native)
+    - 📥 Data: Use "Download CSV" buttons
+    - 📄 Theory: Copy LaTeX source or download .tex file
+    """)
