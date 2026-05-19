@@ -3,7 +3,8 @@ CoCrFeNi Gibbs Free Energy Explorer
 Optimized with RegularGridInterpolator + Build Button
 WITH: Sunburst Charts, Radar Charts, LaTeX Theory Documentation
 PLUS: Grain Size Derived Interfacial Area Density (Sv) & Net Force
-FIXED: Radar chart MPa/Pa units and LaTeX rendering
+FIXED: Radar chart MPa/Pa normalization, LaTeX rendering
+ADDED: Current State Sunburst (Temperature → Elements → Force in N)
 """
 import os
 import sys
@@ -214,19 +215,19 @@ def display_latex_theory():
     st.markdown("## 📚 Thermodynamic Theory Reference")
     with st.expander("📋 View Theory (Rendered Equations)", expanded=True):
         st.markdown(r"""
-| **Concept** | **Mathematical Formulation** |
-|:---|:---|
-| **Gibbs Free Energy** | $G_{\text{phase}}(x_{\text{Co}},x_{\text{Cr}},x_{\text{Fe}},x_{\text{Ni}},T)$ <br> Computed from CALPHAD databases for LIQUID and FCC phases. Constraint: $\sum_i x_i = 1$ |
-| **Driving Force ($\Delta G$)** | $\Delta G = G_{\text{FCC}} - G_{\text{LIQUID}} \quad [\text{J/mol}]$ <br> $\Delta G < 0$: FCC favored; $\Delta G > 0$: LIQUID favored |
-| **Volumetric Driving Pressure** | $\Delta G_v = \frac{\Delta G}{V_m} \quad [\text{Pa} = \text{N/m}^2]$ <br> $V_m$: molar volume $[\text{m}^3/\text{mol}]$ |
-| **Molar Volume Models** | *Constant*: $V_m = V_0$ <br> *Composition‑dependent*: $V_m = \sum_i x_i V_m^{(i)}$ |
-| **Grain Boundary Area Density** | $S_v = \frac{k}{d} \quad [\text{m}^2/\text{m}^3]$ <br> $d$: grain size $[\text{m}]$, $k$: shape factor (2,3,6) |
-| **Total Interface Area** | $A_{\text{total}} = S_v \times V = \frac{k \cdot V}{d} \quad [\text{m}^2]$ |
-| **Net Driving Force (Bulk)** | $F_{\text{total}} = \Delta G_v \times A_{\text{total}} = \Delta G_v \cdot \frac{k \cdot V}{d} \quad [\text{N}]$ |
-| **Interface Force (Single Area)** | $F = \Delta G_v \times A \quad [\text{N}]$ |
-| **Temperature Normalization** | $T_{\text{norm}} = \frac{T - 300}{3300 - 300} \in [0,1]$ |
-| **Interpolation Strategy** | *RegularGridInterpolator*: for regular composition grids <br> *LinearNDInterpolator*: fallback for irregular grids |
-        """, unsafe_allow_html=True)
+        | **Concept** | **Mathematical Formulation** |
+        |:---|:---|
+        | **Gibbs Free Energy** | $G_{\text{phase}}(x_{\text{Co}},x_{\text{Cr}},x_{\text{Fe}},x_{\text{Ni}},T)$ <br> Computed from CALPHAD databases for LIQUID and FCC phases. <br> Constraint: $\sum_i x_i = 1$ |
+        | **Driving Force ($\Delta G$)** | $\Delta G = G_{\text{FCC}} - G_{\text{LIQUID}} \quad [\text{J/mol}]$ <br> $\Delta G < 0$: FCC favored; $\Delta G > 0$: LIQUID favored |
+        | **Volumetric Driving Pressure** | $\Delta G_v = \frac{\Delta G}{V_m} \quad [\text{Pa} = \text{N/m}^2]$ <br> $V_m$: Molar volume $[\text{m}^3/\text{mol}]$ |
+        | **Molar Volume Models** | *Constant:* $V_m = V_0$ (user-defined) <br> *Composition-dependent:* $V_m = \sum_i x_i V_m^{(i)}$ |
+        | **Grain Boundary Area Density** | $S_v = \frac{k}{d} \quad [\text{m}^2/\text{m}^3]$ <br> $d$: avg. FCC grain size $[\text{m}]$, $k$: shape factor (2=sphere, 3=tetrakaidecahedron, 6=cube) |
+        | **Total Interface Area** | $A_{\text{total}} = S_v \times V = \frac{k \cdot V}{d} \quad [\text{m}^2]$ <br> $V$: sample volume $[\text{m}^3]$ |
+        | **Net Driving Force (Bulk)** | $F_{\text{total}} = \Delta G_v \times A_{\text{total}} = \Delta G_v \cdot \frac{k \cdot V}{d} \quad [\text{N}]$ |
+        | **Interface Force (Single Area)** | $F = \Delta G_v \times A \quad [\text{N}]$ <br> $A$: single interface area $[\text{m}^2]$ |
+        | **Temperature Normalization** | $T_{\text{norm}} = \frac{T - 300}{3300 - 300} \in [0,1]$ |
+        | **Interpolation Strategy** | *RegularGridInterpolator* for regular grids, <br> *LinearNDInterpolator* fallback for irregular grids |
+        """)
         st.markdown("### 🔑 Key Assumptions")
         st.markdown("""
         - ✅ Ideal mixing approximation for composition-dependent molar volume
@@ -248,60 +249,38 @@ def display_latex_theory():
         col_dl1, col_dl2 = st.columns(2)
         with col_dl1:
             if st.button("📥 Copy LaTeX Source", key="btn_copy_latex"):
-                # Provide the LaTeX source used to generate the rendered table
-                latex_source = r"""
-\documentclass{article}
-\usepackage{booktabs,amsmath,siunitx,tabularx}
+                st.code("""\\begin{table}[h!]
+\\centering
+\\begin{tabular}{l l}
+\\textbf{Concept} & \\textbf{Formulation} \\\\
+\\hline
+Gibbs Free Energy & $G_{\\text{phase}}(x_{\\text{Co}},x_{\\text{Cr}},x_{\\text{Fe}},x_{\\text{Ni}},T)$ \\\\
+Driving Force & $\\Delta G = G_{\\text{FCC}} - G_{\\text{LIQUID}}$ \\\\
+Volumetric Pressure & $\\Delta G_v = \\Delta G / V_m$ \\\\
+...
+\\end{tabular}
+\\end{table}""")
+                st.success("✅ LaTeX source copied!")
+        with col_dl2:
+            if st.button("📄 Download .tex File", key="btn_dl_latex"):
+                tex_content = r"""\documentclass{article}
+\usepackage{booktabs,amsmath,siunitx}
+\begin{document}
 \begin{table}[h!]
 \centering
-\begin{tabularx}{\textwidth}{@{}lX@{}}
+\begin{tabular}{l l}
 \toprule
-\textbf{Concept} & \textbf{Mathematical Formulation} \\
+\textbf{Concept} & \textbf{Formulation} \\
 \midrule
-\textbf{Gibbs Free Energy} & 
-$G_{\text{phase}}(x_{\text{Co}},x_{\text{Cr}},x_{\text{Fe}},x_{\text{Ni}},T)$ \\
-& Constraint: $\sum_i x_i = 1$ \\[8pt]
-\textbf{Driving Force ($\Delta G$)} & 
-$\Delta G = G_{\text{FCC}} - G_{\text{LIQUID}} \quad [\si{\joule\per\mol}]$ \\
-& $\Delta G < 0$: FCC favored; $\Delta G > 0$: LIQUID favored \\[8pt]
-\textbf{Volumetric Driving Pressure} & 
-$\Delta G_v = \frac{\Delta G}{V_m} \quad [\si{\pascal}]$ \\[8pt]
-\textbf{Molar Volume Models} & 
-\textit{Constant:} $V_m = V_0$ \\
-& \textit{Composition-dependent:} $V_m = \sum_i x_i V_m^{(i)}$ \\[8pt]
-\textbf{Grain Boundary Area Density} & 
-$S_v = \frac{k}{d} \quad [\si{\meter\squared\per\meter\cubed}]$ \\[8pt]
-\textbf{Total Interface Area} & 
-$A_{\text{total}} = S_v \times V = \frac{k \cdot V}{d} \quad [\si{\meter\squared}]$ \\[8pt]
-\textbf{Net Driving Force (Bulk)} & 
-$F_{\text{total}} = \Delta G_v \times A_{\text{total}} = \Delta G_v \cdot \frac{k \cdot V}{d} \quad [\si{\newton}]$ \\[8pt]
-\textbf{Interface Force (Single Area)} & 
-$F = \Delta G_v \times A \quad [\si{\newton}]$ \\[8pt]
-\textbf{Temperature Normalization} & 
-$T_{\text{norm}} = \frac{T - 300}{3300 - 300} \in [0,1]$ \\[8pt]
+Gibbs Free Energy & $G_{\text{phase}}(x_{\text{Co}},x_{\text{Cr}},x_{\text{Fe}},x_{\text{Ni}},T)$ \\
+Driving Force & $\Delta G = G_{\text{FCC}} - G_{\text{LIQUID}}$ \\
+Volumetric Pressure & $\Delta G_v = \Delta G / V_m$ \\
+...
 \bottomrule
-\end{tabularx}
-\caption{Core thermodynamic relationships in CoCrFeNi Gibbs Energy Explorer}
+\end{tabular}
 \end{table}
-"""
-                st.code(latex_source, language="latex")
-                st.success("✅ LaTeX code ready to copy!")
-        with col_dl2:
-            if st.button("📄 Download as .tex File", key="btn_dl_latex"):
-                full_tex = r"""\documentclass{article}
-\usepackage{booktabs,amsmath,siunitx,tabularx}
-\usepackage[margin=1in]{geometry}
-\title{CoCrFeNi Thermodynamic Theory}
-\begin{document}
-\maketitle
-% Insert the table from above
 \end{document}"""
-                st.download_button(
-                    label="Click to Download",
-                    data=full_tex,
-                    file_name="CoCrFeNi_theory.tex",
-                    mime="text/x-tex"
-                )
+                st.download_button("Click to Download", tex_content, "CoCrFeNi_theory.tex", "text/x-tex")
 
 display_latex_theory()
 st.divider()
@@ -370,7 +349,7 @@ area_mode = st.sidebar.radio(
     help="Choose how to specify the total interfacial area"
 )
 
-# Initialize all grain-size variables with safe defaults
+# Initialize all grain-size variables with safe defaults to prevent NameError
 grain_size_um = None
 grain_size_m = None
 shape_choice = None
@@ -518,6 +497,7 @@ else:
         col_f3.metric("Net Force $F_{total}$", f"{net_force:.3e} N",
                       help="Total thermodynamic driving force on all grain boundaries")
 
+        # Physical interpretation
         a4_area = 0.0625  # m² (A4 paper)
         a4_equivalent = interface_area / a4_area if a4_area > 0 else 0
         st.info(f"""
@@ -774,7 +754,125 @@ with tab4:
 
 with tab5:
     st.markdown("### 🌞 Hierarchical Sunburst: Interface Driving Force")
-    st.info("🔄 **Hierarchy**: Temperature (normalized) → Composition Elements → Driving Force")
+    st.info("🔄 **Hierarchy**: Temperature (normalized) → Composition Elements → Force (N)")
+
+    # --- New Current State Sunburst (Temperature -> Elements -> Force in N) ---
+    st.subheader("📌 Current State Sunburst (Temperature → Elements → Force)")
+    if g_liq is None or g_fcc is None:
+        st.warning("⚠️ Select a valid composition to generate the current state sunburst.")
+    else:
+        # Colors for each element (fixed for legend)
+        element_colors = {
+            "Co": "#1f77b4",  # blue
+            "Cr": "#ff7f0e",  # orange
+            "Fe": "#2ca02c",  # green
+            "Ni": "#d62728"   # red
+        }
+        # Build sunburst data
+        ids = []
+        parents = []
+        labels = []
+        values = []
+        colors = []
+        customdata = []
+
+        # Root
+        ids.append("root")
+        parents.append("")
+        labels.append("CoCrFeNi System")
+        values.append(1)
+        colors.append("lightgray")
+        customdata.append(["root", 0, 0])
+
+        # Temperature layer
+        ids.append(f"T_{T}")
+        parents.append("root")
+        labels.append(f"Temperature: {T} K")
+        values.append(1)  # placeholder
+        colors.append("lightblue")
+        customdata.append([f"T_{T}", T, 0])
+
+        # Composition layer: four elements as siblings under temperature
+        # Their values are mole fractions (sum to 1)
+        elements = [("Co", x_co), ("Cr", x_cr), ("Fe", x_fe), ("Ni", x_ni)]
+        for elem, frac in elements:
+            elem_id = f"T_{T}_{elem}"
+            ids.append(elem_id)
+            parents.append(f"T_{T}")
+            labels.append(f"{elem}<br>{frac:.3f}")
+            values.append(frac)
+            colors.append(element_colors[elem])
+            customdata.append([elem_id, elem, frac])
+
+            # Force layer under each element (same net force value)
+            force_id = f"{elem_id}_force"
+            ids.append(force_id)
+            parents.append(elem_id)
+            labels.append(f"Force: {net_force:.2e} N")
+            values.append(net_force)
+            colors.append("gold")
+            customdata.append([force_id, net_force, net_force])
+
+        # Create sunburst figure
+        fig_sb_current = go.Figure(go.Sunburst(
+            ids=ids,
+            parents=parents,
+            labels=labels,
+            values=values,
+            marker=dict(
+                colors=colors,
+                line=dict(width=1, color='white')
+            ),
+            branchvalues='total',
+            hovertemplate=
+                '<b>%{label}</b><br>' +
+                'Value: %{value:.3e}<br>' +
+                '<extra></extra>',
+            customdata=customdata,
+            insidetextorientation='radial',
+            maxdepth=3
+        ))
+        fig_sb_current.update_layout(
+            title=dict(
+                text=f'🌞 Current State: {T} K | Force = {net_force:.2e} N<br>' +
+                     '<sup>Outer: Temperature | Middle: Element (mole fraction) | Inner: Force (N)</sup>',
+                font=dict(size=14),
+                x=0.5
+            ),
+            margin=dict(t=80, l=0, r=0, b=0),
+            width=700,
+            height=700,
+            uniformtext=dict(minsize=10, mode='hide')
+        )
+        # Add legend for element colors
+        for elem, color in element_colors.items():
+            fig_sb_current.add_annotation(
+                x=1.05, y=1 - 0.05 * list(element_colors.keys()).index(elem),
+                xref='paper', yref='paper',
+                showarrow=False,
+                text=f"• {elem}",
+                font=dict(color=color, size=12),
+                align='left'
+            )
+        st.plotly_chart(fig_sb_current, use_container_width=True)
+
+        # Download button for current sunburst
+        if st.button("📥 Download Current Sunburst as PNG", key="btn_dl_current_sunburst"):
+            try:
+                img_bytes = fig_sb_current.to_image(format='png', width=800, height=800, scale=2)
+                st.download_button(
+                    label="Click to Download PNG",
+                    data=img_bytes,
+                    file_name=f"sunburst_current_T{T}K.png",
+                    mime="image/png"
+                )
+            except Exception as e:
+                st.error("❌ Image export requires kaleido: `pip install kaleido`")
+                st.code(f"Error: {e}")
+
+    st.divider()
+    st.subheader("📊 Multi‑Sample Sunburst (All Data)")
+    st.info("🔄 **Hierarchy**: Temperature (normalized) → Composition Samples → Force Magnitude | Color = ΔGᵥ [MPa]")
     col_sb1, col_sb2, col_sb3, col_sb4 = st.columns(4)
     with col_sb1:
         sb_area = st.number_input(
@@ -793,7 +891,7 @@ with tab5:
         sb_depth = st.slider("Max Hierarchy Depth", 2, 4, 3, key="sb_depth_slider")
     with col_sb4:
         sb_sample = st.slider("Compositions per T", 4, 20, 8, 4, key="sb_sample_slider")
-    if st.button("🔄 Generate Sunburst Chart", key="btn_generate_sunburst", type="primary"):
+    if st.button("🔄 Generate Multi‑Sample Sunburst", key="btn_generate_sunburst", type="primary"):
         with st.spinner("Building hierarchical visualization..."):
             ids, parents, labels, values, colors, custom_data = [], [], [], [], [], []
             ids.append("root")
@@ -826,7 +924,7 @@ with tab5:
                     if g_liq_s is not None and g_fcc_s is not None:
                         delta_G_s = g_fcc_s - g_liq_s
                         V_m_s = composition_dependent_vm(x_co_s, x_cr_s, x_fe_s, x_ni_s)
-                        delta_G_v_s = delta_G_s / V_m_s / 1e6  # now in MPa
+                        delta_G_v_s = delta_G_s / V_m_s / 1e6
                     else:
                         delta_G_v_s = np.random.randn() * 10
                     comp_id = f"{temp_id}_c{idx}"
@@ -860,14 +958,14 @@ with tab5:
                     'Driving Pressure: %{customdata[1]:.2f} MPa<br>' +
                     f'Interface Area: {sb_area:.2e} m²<br>' +
                     'Force Magnitude: %{customdata[2]:.2e} N<br>' +
-                    'Net Force: %{customdata[3]:.2e} N<extra></extra>',
+                    'Net Force: %{customdata[3]:.2e} N<br><extra></extra>',
                 customdata=custom_data,
                 insidetextorientation='radial',
                 maxdepth=sb_depth
             ))
             fig_sunburst.update_layout(
                 title=dict(
-                    text='🌞 CoCrFeNi Interface Driving Force Explorer<br>' +
+                    text='🌞 CoCrFeNi Interface Driving Force Explorer (All Data)<br>' +
                          f'<sup>Color: ΔGᵥ [MPa] | Area: |F| [N] | A = {sb_area:.2e} m²</sup>',
                     font=dict(size=16),
                     x=0.5
@@ -884,19 +982,202 @@ with tab5:
                 bgcolor='rgba(255,255,255,0.7)', borderpad=4
             )
             st.plotly_chart(fig_sunburst, use_container_width=True)
-            if st.button("📥 Download Sunburst as PNG", key="btn_dl_sunburst"):
+            if st.button("📥 Download Multi‑Sample Sunburst as PNG", key="btn_dl_sunburst_multi"):
                 try:
                     img_bytes = fig_sunburst.to_image(format='png', width=1000, height=1000, scale=2)
                     st.download_button(
                         label="Click to Download PNG",
                         data=img_bytes,
-                        file_name=f"sunburst_CoCrFeNi_T{len(temperatures)}temps.png",
+                        file_name=f"sunburst_multi_T{len(temperatures)}temps.png",
                         mime="image/png"
                     )
                 except Exception as e:
                     st.error("❌ Image export requires kaleido: `pip install kaleido`")
                     st.code(f"Error: {e}")
-    with st.expander("📖 How to Read the Sunburst Chart", expanded=False):
+
+    with st.expander("📖 How to Read the Sunburst Charts", expanded=False):
         st.markdown("""
         ### 🔍 Sunburst Chart Guide
-        **Hierarchy Structure:**
+        **Current State Sunburst (Temperature → Elements → Force):**
+        - Outer ring: Selected temperature (K)
+        - Middle ring: Four elements (Co, Cr, Fe, Ni) with sizes proportional to mole fractions (sum = 1)
+        - Inner ring: Net driving force in **Newtons (N)** – same value repeated under each element for visualization
+        - Element colors are fixed and shown in the legend
+
+        **Multi‑Sample Sunburst:**
+        - Hierarchy: Root → Temperature (normalized) → Composition Samples → Force Magnitude
+        - 🎨 **Color**: Signed driving pressure ΔGᵥ [MPa] (Blue = FCC favored, Red = LIQUID favored)
+        - 📐 **Sector Area**: Force magnitude |F| = |ΔGᵥ| × A [N]
+        - Click any sector to drill down
+        """)
+
+with tab6:
+    st.markdown("### 🕸️ Multivariate State Radar Chart")
+    st.caption(f"Current: Co:{x_co:.3f} Cr:{x_cr:.3f} Fe:{x_fe:.3f} Ni:{x_ni:.3f} @ {T} K")
+    if g_liq is None or g_fcc is None:
+        st.warning("⚠️ Evaluate a valid composition first to generate radar chart")
+        st.info("💡 Adjust composition inputs to fall within data convex hull")
+    else:
+        T_norm = normalize_temperature(T)
+        # FIXED: Use delta_G_v_MPa (MPa) for normalization, not Pa
+        delta_G_v_norm = min(1.0, abs(delta_G_v_MPa) / 100)
+        categories = ['x_Co', 'x_Cr', 'x_Fe', 'x_Ni', 'T (norm)', '|ΔGᵥ| (norm)']
+        values = [x_co, x_cr, x_fe, x_ni, T_norm, delta_G_v_norm]
+        phase_pref, phase_color, phase_emoji = get_phase_preference(delta_G)
+        fig_radar = go.Figure(data=go.Scatterpolar(
+            r=values,
+            theta=categories,
+            fill='toself',
+            name=f'Current State {phase_emoji}',
+            line=dict(color=phase_color, width=3),
+            fillcolor=f'rgba({int(phase_color[1:3],16)}, {int(phase_color[3:5],16)}, {int(phase_color[5:7],16)}, 0.25)',
+            hovertemplate=
+                '<b>Thermodynamic State</b><br>' +
+                'Composition: Co:%{r[0]:.3f} Cr:%{r[1]:.3f} Fe:%{r[2]:.3f} Ni:%{r[3]:.3f}<br>' +
+                'Temperature: %{r[4]:.3f} (norm) ≈ ' + f'{T} K<br>' +
+                '|Driving Pressure|: %{r[5]:.3f} (norm) ≈ {abs(delta_G_v_MPa):.2f} MPa<br>' +
+                f'Interface Force: {abs(net_force):.2e} N<extra></extra>'
+        ))
+        baseline_vals = [0.25, 0.25, 0.25, 0.25, 0.5, 0.3]
+        fig_radar.add_trace(go.Scatterpolar(
+            r=baseline_vals,
+            theta=categories,
+            fill='none',
+            name='Equiatomic Reference',
+            line=dict(color='gray', width=1.5, dash='dot'),
+            opacity=0.6
+        ))
+        fig_radar.update_layout(
+            title=dict(
+                text=f'🕸️ Thermodynamic State Radar<br>' +
+                     f'<sup>T={T} K | ΔG={delta_G:.1f} J/mol | {phase_pref}</sup>',
+                font=dict(size=14),
+                x=0.5
+            ),
+            polar=dict(
+                radialaxis=dict(
+                    visible=True,
+                    range=[0, 1.1],
+                    tickfont=dict(size=9),
+                    gridcolor='lightgray',
+                    linecolor='gray'
+                ),
+                angularaxis=dict(
+                    tickfont=dict(size=10, color='darkgray'),
+                    rotation=90,
+                    direction='clockwise',
+                    gridcolor='lightgray'
+                ),
+                bgcolor='rgba(240,240,240,0.3)'
+            ),
+            showlegend=True,
+            legend=dict(
+                orientation='h',
+                yanchor='bottom',
+                y=-0.15,
+                xanchor='center',
+                x=0.5
+            ),
+            margin=dict(t=70, l=30, r=30, b=50),
+            width=550,
+            height=550,
+            annotations=[
+                dict(
+                    text=f"ΔGᵥ = {delta_G_v_MPa:.1f} MPa<br>F = {net_force:.2e} N",
+                    x=0.5, y=-0.22, xref='paper', yref='paper',
+                    showarrow=False,
+                    font=dict(size=10, color=phase_color),
+                    bgcolor=f'rgba({int(phase_color[1:3],16)}, {int(phase_color[3:5],16)}, {int(phase_color[5:7],16)}, 0.1)',
+                    borderpad=4,
+                    bordercolor=phase_color
+                )
+            ]
+        )
+        col_rad1, col_rad2 = st.columns([2, 1])
+        with col_rad1:
+            st.plotly_chart(fig_radar, use_container_width=True)
+        with col_rad2:
+            st.markdown("##### 📊 Interpretation Guide")
+            st.markdown(f"""
+            **Axes (all normalized [0,1]):**
+            - **x_Co, x_Cr, x_Fe, x_Ni**: Mole fractions
+            - **T (norm)**: (T-300)/3000 → 0=300K, 1=3300K
+            - **|ΔGᵥ| (norm)**: |driving pressure| / 100 MPa
+            **Visual Encoding:**
+            - {phase_emoji} **Fill color**: Phase preference
+              - 🔵 Blue: FCC favored (ΔG < 0)
+              - 🟠 Orange: LIQUID favored (ΔG > 0)
+            - **Dotted gray**: Equiatomic baseline (0.25 each)
+            - **Radial distance**: Value magnitude
+            **Current Metrics:**
+            - ΔG = {delta_G:.1f} J/mol
+            - ΔGᵥ = {delta_G_v_MPa:.1f} MPa
+            - Force @ A={interface_area:.2e}m²: {abs(net_force):.2e} N
+            """)
+            dist_from_equiatomic = np.sqrt(sum((v-0.25)**2 for v in [x_co, x_cr, x_fe, x_ni]))
+            st.metric("Distance from equiatomic", f"{dist_from_equiatomic:.3f}")
+            st.metric("Driving force magnitude", f"{abs(delta_G_v_MPa):.1f} MPa")
+            if st.button("📥 Download Radar as PNG", key="btn_dl_radar"):
+                try:
+                    img_bytes = fig_radar.to_image(format='png', width=600, height=600, scale=2)
+                    st.download_button(
+                        label="Click to Download",
+                        data=img_bytes,
+                        file_name=f"radar_CoCrFeNi_T{T}K.png",
+                        mime="image/png"
+                    )
+                except:
+                    st.error("❌ Requires `kaleido`: `pip install kaleido`")
+            if st.button("📋 Copy State Summary"):
+                summary = f"""CoCrFeNi State Summary @ {T}K
+Composition: Co={x_co:.3f}, Cr={x_cr:.3f}, Fe={x_fe:.3f}, Ni={x_ni:.3f}
+G_LIQUID = {g_liq:.1f} J/mol
+G_FCC = {g_fcc:.1f} J/mol
+ΔG = {delta_G:.1f} J/mol ({phase_pref})
+ΔGᵥ = {delta_G_v_MPa:.1f} MPa
+Interface Force (A={interface_area:.2e}m²) = {net_force:.2e} N"""
+                st.code(summary)
+                st.success("✅ Summary copied to code block!")
+
+# ================= FOOTER & REFERENCES =================
+st.divider()
+st.caption("""
+**References & Resources**:
+1. Porter, D.A. & Easterling, K.E. *Phase Transformations in Metals and Alloys*, CRC Press (2009)
+2. Mills, K.C. *Int. J. Thermophys.* **23**, 2002 (Pure element molar volumes at elevated T)
+3. Saunders, N. & Miodownik, A.P. *CALPHAD: Calculation of Phase Diagrams*, Pergamon (1998)
+4. SciPy: `RegularGridInterpolator`, `LinearNDInterpolator` documentation
+5. Plotly: Interactive visualization library (https://plotly.com)
+6. Underwood, E.E. *Quantitative Stereology*, Addison-Wesley (grain shape factors & Sv)
+
+**Data Format**: CSV files with columns [Co, Cr, Fe, Ni, G_LIQ, G_FCC] where Σxᵢ = 1.0  
+**Interpolation**: Regular grid (fast) or Delaunay triangulation (fallback)  
+**Grain Size Method**: $S_v = k/d$; $A_{{total}} = S_v \\times V$; $F_{{total}} = \\Delta G_v \\times A_{{total}}$  
+**Units**: Energy [J/mol], Volume [m³/mol], Pressure [Pa = N/m²], Force [N], Length [m]
+""")
+
+st.markdown("---")
+col_foot1, col_foot2, col_foot3 = st.columns(3)
+with col_foot1:
+    st.caption("🔄 Auto-refreshes when inputs change")
+with col_foot2:
+    if st.button("♻️ Reset to Defaults"):
+        for key in list(st.session_state.keys()):
+            if key not in ["interpolators", "interpolators_built"]:
+                del st.session_state[key]
+        st.rerun()
+with col_foot3:
+    st.caption(f"📍 Working directory: `{SCRIPT_DIR}`")
+
+if st.sidebar.checkbox("❓ Show Help & Troubleshooting", value=False):
+    st.sidebar.markdown("""
+    ### 🆘 Quick Help
+    **Common Issues:**
+    - ❌ "Composition outside convex hull": Try values closer to 0.25 each
+    - ❌ "No CSV files found": Place `Gibbs_XXXXK.csv` files in `csv_files/` folder
+    - ❌ "Interpolator build slow": Click build once, then queries are instant
+    **Performance Tips:**
+    - ✅ Use regular composition grids for fastest interpolation
+    - ✅ Build interpolators once at startup
+    - ✅ Cache is cleared after 1 hour of inactivity
+    **Data Requirements:**
