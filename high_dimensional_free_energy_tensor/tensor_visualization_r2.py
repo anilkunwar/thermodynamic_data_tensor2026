@@ -127,7 +127,7 @@ with st.sidebar:
     st.subheader("🌡️ Visualization Parameters")
     T_val = st.select_slider("Field T (K)", options=T_list, 
                              value=T_list[len(T_list)//2] if T_list else 1000)
-    grid_res = st.slider("Grid Resolution", 15, 50, 25, step=5,
+    grid_res = st.slider("Grid Resolution", 15, 500, 25, step=5,
                          help="Higher = finer detail but slower rendering.")
 
     st.divider()
