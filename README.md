@@ -20,7 +20,7 @@
 
 # Tetrakaidecahedron FCC grain of CoCrFeNi alloy
 
-[![meaningtowords](https://img.shields.io/badge/fcc-v1.0-blue)](https://tetrakaidecahedron-grain1.streamlit.app/) ( Schematic construction of 3D grain in CoCrFeNi alloy)
+[![meaningtowords](https://img.shields.io/badge/fcc-v1.0-red)](https://tetrakaidecahedron-grain1.streamlit.app/) ( Schematic construction of 3D grain in CoCrFeNi alloy)
 
 
 
