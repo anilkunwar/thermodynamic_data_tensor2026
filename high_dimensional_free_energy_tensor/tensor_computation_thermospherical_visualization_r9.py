@@ -6,10 +6,6 @@ import streamlit as st
 import plotly.graph_objects as go
 from scipy.interpolate import LinearNDInterpolator
 from scipy.spatial import ConvexHull, Delaunay
-from scipy import linalg
-import matplotlib.pyplot as plt
-from io import BytesIO
-import base64
 
 # Try importing scipy.special
 try:
@@ -26,7 +22,8 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_FILES_DIR = os.path.join(SCRIPT_DIR, "csv_files")
 os.makedirs(CSV_FILES_DIR, exist_ok=True)
 
-st.set_page_config(page_title="CoCrFeNi Phase Stability Explorer v3", layout="wide")
+from scipy import linalg
+st.set_page_config(page_title="CoCrFeNi Phase Stability Explorer v2", layout="wide")
 
 # =============================================
 # COLOR & SYMBOL LIBRARY
@@ -58,7 +55,7 @@ PHASE_COLORS_RGBA = {"LIQUID": "rgba(231, 76, 60, 0.25)", "FCC": "rgba(41, 128, 
 def load_all_data(csv_dir=CSV_FILES_DIR):
     files = sorted(glob.glob(os.path.join(csv_dir, "Gibbs_*.csv")))
     if not files:
-        st.error(f"No CSV files found in `{csv_dir}`. Please upload Gibbs energy CSV files.")
+        st.error(f"No CSV files found in `{csv_dir}`.")
         st.stop()
     dfs = []
     for f in files:
@@ -101,8 +98,9 @@ except Exception:
     HULL_AVAILABLE = False
     data_hull = None
 
+
 # =============================================
-# TENSOR ANALYSIS FUNCTIONS (NEW - per paper)
+# TENSOR ANALYSIS FUNCTIONS (CPD - per Coutinho et al. 2020)
 # =============================================
 @st.cache_data
 def build_tensor_data(df):
@@ -156,19 +154,30 @@ def unfold_tensor(tensor, mode):
         return tensor.transpose(3, 0, 1, 2).reshape(tensor.shape[3], -1)
 
 def svd_rank_analysis(matrix, threshold=0.01):
-    """Estimate effective rank via SVD"""
-    matrix_filled = matrix.copy()
-    for col in range(matrix.shape[1]):
-        col_data = matrix[:, col]
+    """Estimate effective rank via SVD with robust NaN handling"""
+    matrix_filled = matrix.copy().astype(np.float64)
+
+    for col in range(matrix_filled.shape[1]):
+        col_data = matrix_filled[:, col]
         valid = ~np.isnan(col_data)
         if np.sum(valid) > 0:
-            matrix_filled[:, col] = np.where(np.isnan(col_data), np.mean(col_data[valid]), col_data)
+            matrix_filled[:, col] = np.where(np.isnan(col_data), np.nanmean(col_data[valid]), col_data)
         else:
             matrix_filled[:, col] = 0.0
 
-    U, s, Vh = linalg.svd(matrix_filled, full_matrices=False)
-    s_norm = s / s[0] if s[0] > 0 else s
+    if np.linalg.norm(matrix_filled) < 1e-12:
+        return 0, np.zeros(min(matrix_filled.shape)), np.zeros(min(matrix_filled.shape))
+
+    try:
+        U, s, Vh = linalg.svd(matrix_filled, full_matrices=False)
+    except Exception as e:
+        st.warning(f"SVD failed: {e}")
+        return 0, np.zeros(min(matrix_filled.shape)), np.zeros(min(matrix_filled.shape))
+
+    s_max = s[0] if len(s) > 0 and s[0] > 0 else 1.0
+    s_norm = s / s_max
     rank = int(np.sum(s_norm > threshold))
+
     return rank, s, s_norm
 
 def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6):
@@ -425,21 +434,15 @@ def get_fcc_radius(G_sh, sh_R_fixed, T_factor):
 # =============================================
 # HEADER
 # =============================================
-st.title("🔷 Co-Cr-Fe-Ni Phase Stability Explorer v3")
+st.title("🔷 Co-Cr-Fe-Ni Phase Stability Explorer v2")
 st.markdown(r"""
-**Single-Temperature Phase Comparison with Temperature-Driven Shape Morphing + Tensor Decomposition Analysis.**  
+**Single-Temperature Phase Comparison with Temperature-Driven Shape Morphing.**  
 FCC surfaces become **crystalline & faceted** at low T. LIQUID surfaces become **fluid & expanded** at high T.  
-The **ΔG = 0 boundary** (gold) marks the exact transition frontier.  
-*New: CPD Tensor Analysis tab based on Coutinho et al. (npj Comp. Mat. 2020)*
+The **ΔG = 0 boundary** (gold) marks the exact transition frontier.
 """)
 
 # =============================================
-# MAIN TABS
-# =============================================
-tab_main, tab_tensor = st.tabs(["🎨 Phase Visualization", "📊 Tensor Decomposition (CPD)"])
-
-# =============================================
-# SIDEBAR (shared)
+# SIDEBAR
 # =============================================
 with st.sidebar:
     st.header("🎛️ Control Panel")
@@ -666,11 +669,15 @@ if query_result:
     c5.metric("|ΔG|", f"{abs(query_result['dG']):,.0f}", "J/mol")
     st.divider()
 
+# =============================================
+# MAIN TABS
+# =============================================
+tab_main, tab_tensor = st.tabs(["🎨 Phase Visualization", "📊 Tensor Decomposition (CPD)"])
 
-# =============================================
-# TAB 1: MAIN VISUALIZATION (Original)
-# =============================================
 with tab_main:
+# =============================================
+# MAIN RENDERING
+# =============================================
     interp_liq, interp_fcc = build_interpolators_for_T(df, T_val)
     if interp_liq is None:
         st.error(f"No interpolator for T={T_val}K")
@@ -678,9 +685,9 @@ with tab_main:
 
     fig = go.Figure()
 
-    # ------------------------------------------------------------------
-    # MODE 1: PHASE BOUNDARY (SCIENTIFIC)
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# MODE 1: PHASE BOUNDARY (SCIENTIFIC)
+# ------------------------------------------------------------------
     if render_mode == "Phase Boundary (Scientific)":
         pts = generate_tetrahedral_grid(grid_res)
         G_liq = interp_liq(pts)
@@ -692,13 +699,13 @@ with tab_main:
         dG = G_liq - G_fcc
         stable = np.where(dG <= 0, "LIQUID", "FCC")
 
-        # Uncertainty / data proximity
+    # Uncertainty / data proximity
         if show_uncertainty and HULL_AVAILABLE:
             proximity = compute_data_proximity(pts, all_pts, max_dist=0.2)
         else:
             proximity = np.ones(len(pts))
 
-        # Phase volume with distinct shapes
+    # Phase volume with distinct shapes
         for phase in ["LIQUID", "FCC"]:
             mask = stable == phase
             if mask.sum() == 0:
@@ -724,7 +731,7 @@ with tab_main:
                 customdata=p_dG
             ))
 
-        # Boundary
+    # Boundary
         boundary_pts, boundary_dG = find_phase_boundary_points(pts, dG, boundary_threshold)
         if len(boundary_pts) > 0:
             fig.add_trace(go.Scatter3d(
@@ -736,8 +743,9 @@ with tab_main:
                 hovertemplate="<b>PHASE BOUNDARY</b><br>ΔG ≈ 0<extra></extra>"
             ))
 
-        # Cross-section plane
+    # Cross-section plane
         if show_slice:
+        # Plane: Co + Cr + Fe = 1 - slice_ni  =>  Fe = (1 - slice_ni) - Co - Cr
             plane_res = 30
             p_co = np.linspace(0, 1-slice_ni, plane_res)
             p_cr = np.linspace(0, 1-slice_ni, plane_res)
@@ -753,7 +761,7 @@ with tab_main:
                 hoverinfo="skip"
             ))
 
-        # Simplex frame
+    # Simplex frame
         if show_simplex:
             edges = [
                 [(1,0,0),(0,1,0)], [(1,0,0),(0,0,1)], [(1,0,0),(0,0,0)],
@@ -775,15 +783,15 @@ with tab_main:
 
         scene_x, scene_y, scene_z = "x<sub>Co</sub>", "x<sub>Cr</sub>", "x<sub>Fe</sub>"
 
-    # ------------------------------------------------------------------
-    # MODE 2: DUAL SH SURFACES (TEMPERATURE MORPH)
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# MODE 2: DUAL SH SURFACES (TEMPERATURE MORPH)
+# ------------------------------------------------------------------
     elif render_mode == "Dual SH Surfaces (Temperature Morph)" and SCIPY_AVAILABLE:
         TH, PH, G_stable, dG_grid, valid_mask, sphere_pts = sample_g_on_sphere(
             interp_liq, interp_fcc, sh_R_fixed, sh_n_theta, sh_n_phi
         )
 
-        # Per-phase l_max with temperature dependence
+    # Per-phase l_max with temperature dependence
         coeffs_liq, _ = fit_sh_coeffs(TH, PH, interp_liq(sphere_pts).reshape(TH.shape), l_max=l_max_liq)
         coeffs_fcc, _ = fit_sh_coeffs(TH, PH, interp_fcc(sphere_pts).reshape(TH.shape), l_max=l_max_fcc)
 
@@ -791,13 +799,13 @@ with tab_main:
             G_liq_sh = reconstruct_sh_surface(TH, PH, coeffs_liq, l_max_liq)
             G_fcc_sh = reconstruct_sh_surface(TH, PH, coeffs_fcc, l_max_fcc)
 
-            # === TEMPERATURE-DRIVEN SHAPE MORPHING ===
+        # === TEMPERATURE-DRIVEN SHAPE MORPHING ===
             R_liq = get_liquid_radius(G_liq_sh, sh_R_fixed, T_factor)
             X_liq = R_liq * np.sin(PH) * np.cos(TH)
             Y_liq = R_liq * np.sin(PH) * np.sin(TH)
             Z_liq = R_liq * np.cos(PH)
 
-            # LIQUID: fluid, shiny, expanded at high T
+        # LIQUID: fluid, shiny, expanded at high T
             fig.add_trace(go.Surface(
                 x=X_liq, y=Y_liq, z=Z_liq,
                 surfacecolor=G_liq_sh,
@@ -816,7 +824,7 @@ with tab_main:
             Y_fcc = R_fcc * np.sin(PH) * np.sin(TH)
             Z_fcc = R_fcc * np.cos(PH)
 
-            # FCC: crystalline, matte, faceted at low T
+        # FCC: crystalline, matte, faceted at low T
             fig.add_trace(go.Surface(
                 x=X_fcc, y=Y_fcc, z=Z_fcc,
                 surfacecolor=G_fcc_sh,
@@ -834,7 +842,7 @@ with tab_main:
                 lighting=dict(ambient=0.65, diffuse=0.4, roughness=0.78, specular=0.15)
             ))
 
-            # ΔG = 0 contour
+        # ΔG = 0 contour
             if show_dg_contour:
                 cx, cy, cz = extract_dg_zero_contour(TH, PH, dG_grid, sh_R_fixed)
                 if len(cx) > 10:
@@ -847,7 +855,7 @@ with tab_main:
                         hovertemplate="<b>PHASE BOUNDARY</b><br>ΔG ≈ 0<extra></extra>"
                     ))
 
-            # Data coverage overlay (small dots on sphere where data exists)
+        # Data coverage overlay (small dots on sphere where data exists)
             if show_data_density:
                 df_T = df[df["T"] == T_val]
                 if len(df_T) > 0:
@@ -863,9 +871,9 @@ with tab_main:
 
         scene_x, scene_y, scene_z = "x<sub>Co</sub>", "x<sub>Cr</sub>", "x<sub>Fe</sub>"
 
-    # ------------------------------------------------------------------
-    # MODE 3: ΔG DIFFERENCE SURFACE
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# MODE 3: ΔG DIFFERENCE SURFACE
+# ------------------------------------------------------------------
     elif render_mode == "ΔG Difference Surface" and SCIPY_AVAILABLE:
         TH, PH, G_stable, dG_grid, valid_mask, sphere_pts = sample_g_on_sphere(
             interp_liq, interp_fcc, sh_R_fixed, sh_n_theta, sh_n_phi
@@ -875,7 +883,7 @@ with tab_main:
         if coeffs_dG is not None:
             dG_smooth = reconstruct_sh_surface(TH, PH, coeffs_dG, l_max)
 
-            # Temperature-modulated deformation
+        # Temperature-modulated deformation
             T_deform = 1.0 + 0.2 * T_factor
             radius = sh_R_fixed * T_deform + dg_scale * dG_smooth
             radius = np.clip(radius, 0.1, 2.0)
@@ -926,9 +934,9 @@ with tab_main:
 
         scene_x, scene_y, scene_z = "x<sub>Co</sub>", "x<sub>Cr</sub>", "x<sub>Fe</sub>"
 
-    # ------------------------------------------------------------------
-    # MODE 4: TERNARY FLAT PROJECTION
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# MODE 4: TERNARY FLAT PROJECTION
+# ------------------------------------------------------------------
     elif render_mode == "Ternary Flat Projection":
         pts = generate_tetrahedral_grid(40)
         G_liq = interp_liq(pts)
@@ -993,9 +1001,9 @@ with tab_main:
 
         scene_x, scene_y, scene_z = "x<sub>Co</sub>", "x<sub>Cr</sub>", "x<sub>Ni</sub>"
 
-    # ------------------------------------------------------------------
-    # MODE 5: MARKERS (DISTINCT SHAPES)
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# MODE 5: MARKERS (DISTINCT SHAPES)
+# ------------------------------------------------------------------
     elif render_mode == "Markers (Distinct Shapes)":
         pts = generate_tetrahedral_grid(grid_res)
         G_liq = interp_liq(pts)
@@ -1074,11 +1082,11 @@ with tab_main:
 
         scene_x, scene_y, scene_z = "x<sub>Co</sub>", "x<sub>Cr</sub>", "x<sub>Fe</sub>"
 
-    # ------------------------------------------------------------------
-    # MODE 6: ANIMATED TEMPERATURE SWEEP
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# MODE 6: ANIMATED TEMPERATURE SWEEP
+# ------------------------------------------------------------------
     elif render_mode == "Animated Temperature Sweep" and SCIPY_AVAILABLE:
-        # Generate frames across temperature range
+    # Generate frames across temperature range
         T_frames = np.linspace(anim_start, anim_end, anim_frames)
         T_frames = [T_list[np.argmin(np.abs(np.array(T_list) - t))] for t in T_frames]
         T_frames = sorted(list(set(T_frames)))
@@ -1131,7 +1139,7 @@ with tab_main:
                 frames.append(go.Frame(data=frame_data, name=f"T={T_frame}"))
 
             if len(frames) > 0:
-                # Initial frame
+            # Initial frame
                 T_init = T_frames[0]
                 interp_liq_i, interp_fcc_i = build_interpolators_for_T(df, T_init)
                 TH, PH, _, _, _, sphere_pts = sample_g_on_sphere(
@@ -1160,7 +1168,7 @@ with tab_main:
 
                 fig.frames = frames
 
-                # Animation controls
+            # Animation controls
                 fig.update_layout(
                     updatemenus=[{
                         "type": "buttons",
@@ -1202,11 +1210,11 @@ with tab_main:
 
         scene_x, scene_y, scene_z = "x<sub>Co</sub>", "x<sub>Cr</sub>", "x<sub>Fe</sub>"
 
-    # ------------------------------------------------------------------
-    # COMMON OVERLAYS
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# COMMON OVERLAYS
+# ------------------------------------------------------------------
 
-    # Composition path (connects query history)
+# Composition path (connects query history)
     if show_comp_path and len(st.session_state.query_history) > 1:
         hist = st.session_state.query_history
         path_x = [h["Co"] for h in hist]
@@ -1224,7 +1232,7 @@ with tab_main:
             hovertemplate="T=%{marker.color:.0f}K<br>Co=%{x:.3f}<br>Cr=%{y:.3f}<br>Fe=%{z:.3f}<extra></extra>"
         ))
 
-    # Query point
+# Query point
     if query_result is not None:
         q_color = PHASE_COLORS[query_result["Phase"]]
         q_symbol = PHASE_SYMBOLS[query_result["Phase"]]
@@ -1261,7 +1269,7 @@ with tab_main:
                 hoverinfo="skip"
             ))
 
-    # Coordinate axes
+# Coordinate axes
     if show_axes_frame:
         axis_len = 1.05
         for coord, color, label in [(0, "#c0392b", "Co"), (1, "#27ae60", "Cr"), (2, "#2980b9", "Fe")]:
@@ -1278,9 +1286,9 @@ with tab_main:
                 hoverinfo="skip", showlegend=False
             ))
 
-    # ------------------------------------------------------------------
-    # LAYOUT
-    # ------------------------------------------------------------------
+# ------------------------------------------------------------------
+# LAYOUT
+# ------------------------------------------------------------------
     def make_axis(title_text):
         return dict(
             title=dict(text=title_text, font=dict(size=14)),
@@ -1317,74 +1325,74 @@ with tab_main:
     except Exception as e:
         st.error(f"Render error: {e}")
 
-    # =============================================
-    # EXPORT & FOOTER
-    # =============================================
-    with st.expander("💾 Export & Data", expanded=False):
-        col1, col2 = st.columns(2)
-
-        # Export current view data
-        if render_mode in ["Phase Boundary (Scientific)", "Markers (Distinct Shapes)", "Ternary Flat Projection"]:
-            pts = generate_tetrahedral_grid(35)
-            G_liq = interp_liq(pts)
-            G_fcc = interp_fcc(pts)
-            valid = ~np.isnan(G_liq) & ~np.isnan(G_fcc)
-            export_df = pd.DataFrame({
-                "Co": pts[valid, 0], "Cr": pts[valid, 1], "Fe": pts[valid, 2],
-                "Ni": 1.0 - pts[valid, 0] - pts[valid, 1] - pts[valid, 2],
-                "G_LIQ": G_liq[valid], "G_FCC": G_fcc[valid],
-                "dG": G_liq[valid] - G_fcc[valid],
-                "Stable_Phase": np.where(G_liq[valid] <= G_fcc[valid], "LIQUID", "FCC"),
-                "T": T_val
-            })
-            csv = export_df.to_csv(index=False)
-            col1.download_button("📥 Download CSV", csv, f"CoCrFeNi_T{T_val}K.csv", "text/csv")
-
-        # Export figure as HTML
-        html_str = fig.to_html(include_plotlyjs="cdn", full_html=True)
-        col2.download_button("🌐 Download HTML", html_str, f"CoCrFeNi_T{T_val}K.html", "text/html")
-
-        # Query history
-        if len(st.session_state.query_history) > 0:
-            st.subheader("Query History")
-            hist_df = pd.DataFrame(st.session_state.query_history)
-            st.dataframe(hist_df.style.format({
-                "Co": "{:.3f}", "Cr": "{:.3f}", "Fe": "{:.3f}", "Ni": "{:.3f}",
-                "G_LIQ": "{:.0f}", "G_FCC": "{:.0f}", "G_stable": "{:.0f}", "dG": "{:.0f}"
-            }), use_container_width=True)
-            if st.button("🗑️ Clear History"):
-                st.session_state.query_history = []
-                st.rerun()
-
-    with st.expander("📖 How to Read Each Mode", expanded=True):
-        st.markdown("""
-        ### Phase Boundary (Scientific) — **Most Accurate**
-        True tetrahedral composition space. 🔴 circles = LIQUID, 🔵 diamonds = FCC, 🟡 X's = ΔG≈0 boundary.  
-        **Uncertainty fading**: points far from data are translucent. **Cross-section plane**: slice at fixed Ni.
-
-        ### Dual SH Surfaces (Temperature Morph) — **Aesthetic + Physical**
-        Two SH surfaces with **temperature-driven shape morphing**:
-        - **LIQUID** (Red): Becomes **larger, smoother, shinier** at high T (fluid expansion)
-        - **FCC** (Blue): Becomes **smaller, faceted, matte** at low T (crystalline ripples)
-        - Auto l_max: LIQUID uses lower l at high T (smooth); FCC uses higher l at low T (faceted)
-        - 🟡 Gold line = ΔG = 0 intersection
-
-        ### ΔG Difference Surface
-        Single sphere deformed by ΔG. **Red/dented** = LIQUID, **Blue/bulged** = FCC. Amplitude = driving force.
-
-        ### Ternary Flat Projection
-        Standard materials view: x=Co, y=Cr, z=Ni. Shape = phase, color = ΔG or proximity.
-
-        ### Markers (Distinct Shapes)
-        Classic 3D scatter with **circle vs diamond** per phase. Boundary points in gold.
-
-        ### Animated Temperature Sweep
-        Play button morphs between temperatures. Watch LIQUID grow and FCC shrink as T increases.
-        """)
-
 
 # =============================================
-# TAB 2: TENSOR DECOMPOSITION ANALYSIS (NEW)
+# EXPORT & FOOTER
+# =============================================
+with st.expander("💾 Export & Data", expanded=False):
+    col1, col2 = st.columns(2)
+
+    # Export current view data
+    if render_mode in ["Phase Boundary (Scientific)", "Markers (Distinct Shapes)", "Ternary Flat Projection"]:
+        pts = generate_tetrahedral_grid(35)
+        G_liq = interp_liq(pts)
+        G_fcc = interp_fcc(pts)
+        valid = ~np.isnan(G_liq) & ~np.isnan(G_fcc)
+        export_df = pd.DataFrame({
+            "Co": pts[valid, 0], "Cr": pts[valid, 1], "Fe": pts[valid, 2],
+            "Ni": 1.0 - pts[valid, 0] - pts[valid, 1] - pts[valid, 2],
+            "G_LIQ": G_liq[valid], "G_FCC": G_fcc[valid],
+            "dG": G_liq[valid] - G_fcc[valid],
+            "Stable_Phase": np.where(G_liq[valid] <= G_fcc[valid], "LIQUID", "FCC"),
+            "T": T_val
+        })
+        csv = export_df.to_csv(index=False)
+        col1.download_button("📥 Download CSV", csv, f"CoCrFeNi_T{T_val}K.csv", "text/csv")
+
+    # Export figure as HTML
+    html_str = fig.to_html(include_plotlyjs="cdn", full_html=True)
+    col2.download_button("🌐 Download HTML", html_str, f"CoCrFeNi_T{T_val}K.html", "text/html")
+
+    # Query history
+    if len(st.session_state.query_history) > 0:
+        st.subheader("Query History")
+        hist_df = pd.DataFrame(st.session_state.query_history)
+        st.dataframe(hist_df.style.format({
+            "Co": "{:.3f}", "Cr": "{:.3f}", "Fe": "{:.3f}", "Ni": "{:.3f}",
+            "G_LIQ": "{:.0f}", "G_FCC": "{:.0f}", "G_stable": "{:.0f}", "dG": "{:.0f}"
+        }), use_container_width=True)
+        if st.button("🗑️ Clear History"):
+            st.session_state.query_history = []
+            st.rerun()
+
+with st.expander("📖 How to Read Each Mode", expanded=True):
+    st.markdown("""
+    ### Phase Boundary (Scientific) — **Most Accurate**
+    True tetrahedral composition space. 🔴 circles = LIQUID, 🔵 diamonds = FCC, 🟡 X's = ΔG≈0 boundary.  
+    **Uncertainty fading**: points far from data are translucent. **Cross-section plane**: slice at fixed Ni.
+
+    ### Dual SH Surfaces (Temperature Morph) — **Aesthetic + Physical**
+    Two SH surfaces with **temperature-driven shape morphing**:
+    - **LIQUID** (Red): Becomes **larger, smoother, shinier** at high T (fluid expansion)
+    - **FCC** (Blue): Becomes **smaller, faceted, matte** at low T (crystalline ripples)
+    - Auto l_max: LIQUID uses lower l at high T (smooth); FCC uses higher l at low T (faceted)
+    - 🟡 Gold line = ΔG = 0 intersection
+
+    ### ΔG Difference Surface
+    Single sphere deformed by ΔG. **Red/dented** = LIQUID, **Blue/bulged** = FCC. Amplitude = driving force.
+
+    ### Ternary Flat Projection
+    Standard materials view: x=Co, y=Cr, z=Ni. Shape = phase, color = ΔG or proximity.
+
+    ### Markers (Distinct Shapes)
+    Classic 3D scatter with **circle vs diamond** per phase. Boundary points in gold.
+
+    ### Animated Temperature Sweep
+    Play button morphs between temperatures. Watch LIQUID grow and FCC shrink as T increases.
+    """)
+
+# =============================================
+# TAB 2: TENSOR DECOMPOSITION ANALYSIS (CPD)
 # =============================================
 with tab_tensor:
     st.header("📊 Thermodynamic Data Tensor (TDT) Analysis")
@@ -1428,8 +1436,9 @@ with tab_tensor:
     phase_for_tensor = st.selectbox("Select Phase for Analysis", ["G_LIQUID", "G_FCC"], index=0)
     tensor_sel = tdt_data['G_LIQ'] if phase_for_tensor == "G_LIQUID" else tdt_data['G_FCC']
 
-    threshold = st.slider("Singular Value Threshold", 0.001, 0.05, 0.01, 0.001, 
-                          help="Fraction of max singular value to count as significant")
+    # FIXED: Use percentage threshold with better range for real CALPHAD data
+    threshold = st.slider("Singular Value Threshold (% of max)", 0.01, 5.0, 0.5, 0.1, 
+                          help="For real CALPHAD data with 0.01 step, try 0.1-1%")
 
     if st.button("🔬 Run Rank Analysis", use_container_width=True):
         with st.spinner("Computing SVD on all mode unfoldings..."):
@@ -1439,7 +1448,8 @@ with tab_tensor:
 
             for mode in range(4):
                 unfolded = unfold_tensor(tensor_sel, mode)
-                rank, s, s_norm = svd_rank_analysis(unfolded, threshold=threshold)
+                # FIXED: Pass threshold as fraction, not percentage
+                rank, s, s_norm = svd_rank_analysis(unfolded, threshold=threshold/100.0)
                 ranks.append(rank)
                 all_s.append(s_norm)
 
@@ -1461,8 +1471,8 @@ with tab_tensor:
                     marker=dict(size=6)
                 ))
 
-            fig_svd.add_hline(y=threshold, line_dash="dash", line_color="gray",
-                             annotation_text=f"Threshold ({threshold})")
+            fig_svd.add_hline(y=threshold/100.0, line_dash="dash", line_color="gray",
+                             annotation_text=f"Threshold ({threshold}%)")
 
             fig_svd.update_layout(
                 title="Singular Value Decay Across Tensor Modes",
@@ -1481,14 +1491,14 @@ with tab_tensor:
             **Interpretation:**
             - The **CP rank** should be at least {max_cp_rank} to capture all modes accurately.
             - Temperature mode (Mode-3) typically has lowest rank (~2-3) because Gibbs energy varies nearly linearly with T.
-            - Composition modes have higher rank (~3-5) due to polynomial mixing terms.
+            - Composition modes have higher rank (~3-6) due to polynomial mixing terms.
             - Paper reports R=6 for quaternary Ag-Cu-Ni-Sn with step size 0.01.
             """)
 
     # --- CPD COMPRESSION ANALYSIS ---
     st.subheader("🗜️ CPD Compression Analysis")
 
-    R_test = st.slider("Test CP Rank (R)", 1, 15, 6, 1)
+    R_test = st.slider("Test CP Rank (R)", 1, 20, 6, 1)
 
     cpd_coeffs = R_test * (n_co + n_cr + n_fe + n_T)
     compression = valid_liq / cpd_coeffs
@@ -1505,7 +1515,7 @@ with tab_tensor:
     """)
 
     # Visualize compression
-    ranks_range = list(range(1, 16))
+    ranks_range = list(range(1, 21))
     cpd_sizes = [r * (n_co + n_cr + n_fe + n_T) for r in ranks_range]
 
     fig_comp = go.Figure()
@@ -1532,18 +1542,20 @@ with tab_tensor:
 
     st.plotly_chart(fig_comp, use_container_width=True)
 
-    # --- CPD RECONSTRUCTION (optional heavy computation) ---
+    # --- CPD RECONSTRUCTION ---
     st.subheader("🔧 CPD Reconstruction")
     st.markdown("Run ALS-based CPD to reconstruct the tensor and measure approximation error.")
 
-    if st.button("⚙️ Run CPD-ALS (may take 30-60s)", use_container_width=True):
+    max_iter = st.slider("Max ALS Iterations", 20, 200, 100, 10)
+
+    if st.button("⚙️ Run CPD-ALS (may take 1-2 min for large tensors)", use_container_width=True):
         with st.spinner(f"Running CP-ALS with R={R_test}..."):
             # Center and scale for numerical stability
             tensor_mean = np.nanmean(tensor_sel)
             tensor_std = np.nanstd(tensor_sel)
             tensor_norm = (tensor_sel - tensor_mean) / (tensor_std + 1e-12)
 
-            A, B, C, D, lam, error = cpd_als_4d(tensor_norm, R_test, max_iter=80, tol=1e-5)
+            A, B, C, D, lam, error = cpd_als_4d(tensor_norm, R_test, max_iter=max_iter, tol=1e-5)
 
             # Reconstruct
             I, J, K, L = tensor_norm.shape
@@ -1557,7 +1569,7 @@ with tab_tensor:
             rel_error = np.sqrt(np.sum(mask * (tensor_norm - recon)**2) / np.sum(mask))
             abs_error = rel_error * tensor_std
 
-            st.success(f"CPD complete! Relative error: {rel_error:.4f} | Absolute error: {abs_error:.2f} J/mol")
+            st.success(f"CPD complete! Relative error: {rel_error:.6f} | Absolute error: {abs_error:.2f} J/mol")
 
             # Display factor matrices
             st.subheader("Factor Matrices")
@@ -1566,17 +1578,17 @@ with tab_tensor:
 
             with tabs[0]:
                 df_A = pd.DataFrame(A, columns=[f"r={r+1}" for r in range(R_test)])
-                df_A.index = [f"Co={v:.2f}" for v in tdt_data['co_vals']]
+                df_A.index = [f"Co={v:.3f}" for v in tdt_data['co_vals']]
                 st.dataframe(df_A.style.background_gradient(cmap='RdBu_r', axis=None), use_container_width=True)
 
             with tabs[1]:
                 df_B = pd.DataFrame(B, columns=[f"r={r+1}" for r in range(R_test)])
-                df_B.index = [f"Cr={v:.2f}" for v in tdt_data['cr_vals']]
+                df_B.index = [f"Cr={v:.3f}" for v in tdt_data['cr_vals']]
                 st.dataframe(df_B.style.background_gradient(cmap='RdBu_r', axis=None), use_container_width=True)
 
             with tabs[2]:
                 df_C = pd.DataFrame(C, columns=[f"r={r+1}" for r in range(R_test)])
-                df_C.index = [f"Fe={v:.2f}" for v in tdt_data['fe_vals']]
+                df_C.index = [f"Fe={v:.3f}" for v in tdt_data['fe_vals']]
                 st.dataframe(df_C.style.background_gradient(cmap='RdBu_r', axis=None), use_container_width=True)
 
             with tabs[3]:
@@ -1660,7 +1672,7 @@ with tab_tensor:
         4. **Efficient evaluation**: Any entry is computed in O(R) operations
 
         **For this Co-Cr-Fe-Ni system:**
-        - With step size 0.05, the TDT has ~32K valid entries
-        - With R=6, CPD needs only ~500 coefficients -> **65x compression**
-        - Paper reports ~1,000,000x compression for step size 0.01 quaternary systems
+        - With step size 0.01, the TDT has ~1M valid entries
+        - With R=6, CPD needs only ~900 coefficients -> **1000x+ compression**
+        - Paper reports ~1,000,000x compression for similar quaternary systems
         """)
