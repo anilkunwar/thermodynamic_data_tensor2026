@@ -200,7 +200,7 @@ def load_all_data(csv_dir=CSV_FILES_DIR):
         st.stop()
     
     # Verify we have the expected 31 temperature files
-    expected_temps = list(range(700, 3701, 100))  # [700, 800, ..., 3300]
+    expected_temps = list(range(300, 3301, 100))  # [700, 800, ..., 3300]
     found_temps = []
     
     for f in files:
