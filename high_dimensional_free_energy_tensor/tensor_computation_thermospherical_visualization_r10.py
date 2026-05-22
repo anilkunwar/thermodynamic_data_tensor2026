@@ -533,7 +533,7 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6):
         for i in range(I):
             valid = mask_flat[i, :]
             if np.sum(valid) > rank:  # Need more observations than parameters
-                A[i, :] = linalg.lstsq(BCD[valid, :], X_flat[i, valid], rcond=None)[0]
+                A[i, :] = linalg.lstsq(BCD[valid, :], X_flat[i, valid])[0]
         
         # Normalize and accumulate norms in lambda later
         norms = np.linalg.norm(A, axis=0) + 1e-12
@@ -550,7 +550,7 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6):
         for j in range(J):
             valid = mask_flat[j, :]
             if np.sum(valid) > rank:
-                B[j, :] = linalg.lstsq(ACD[valid, :], X_flat[j, valid], rcond=None)[0]
+                B[j, :] = linalg.lstsq(ACD[valid, :], X_flat[j, valid])[0]
         
         norms = np.linalg.norm(B, axis=0) + 1e-12
         B = B / norms
@@ -566,7 +566,7 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6):
         for k in range(K):
             valid = mask_flat[k, :]
             if np.sum(valid) > rank:
-                C[k, :] = linalg.lstsq(ABD[valid, :], X_flat[k, valid], rcond=None)[0]
+                C[k, :] = linalg.lstsq(ABD[valid, :], X_flat[k, valid])[0]
         
         norms = np.linalg.norm(C, axis=0) + 1e-12
         C = C / norms
@@ -582,7 +582,7 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6):
         for t in range(L):
             valid = mask_flat[t, :]
             if np.sum(valid) > rank:
-                D[t, :] = linalg.lstsq(ABC[valid, :], X_flat[t, valid], rcond=None)[0]
+                D[t, :] = linalg.lstsq(ABC[valid, :], X_flat[t, valid])[0]
         
         norms = np.linalg.norm(D, axis=0) + 1e-12
         D = D / norms
@@ -876,7 +876,7 @@ if SCIPY_AVAILABLE:
             rank_A = np.linalg.matrix_rank(A)
             if rank_A < A.shape[1]:
                 st.warning(f"⚠️ Design matrix is rank-deficient (rank={rank_A} < cols={A.shape[1]}). Using minimum-norm solution.")
-            coeffs, residuals, rank, s = linalg.lstsq(A, g_flat, rcond=None)
+            coeffs, residuals, rank, s = linalg.lstsq(A, g_flat)
         except Exception as e:
             st.warning(f"⚠️ lstsq failed: {e}. Returning None.")
             return None, l_max
