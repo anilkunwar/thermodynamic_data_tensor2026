@@ -7,7 +7,7 @@ Thermodynamic Data Tensor Analysis with Canonical Polyadic Decomposition (CPD)
 THERMODYNAMIC DATA TENSOR (TDT) SPECIFICATION:
 ----------------------------------------------
 The code processes CALPHAD-computed Gibbs energy data for the quaternary 
-Co-Cr-Fe-Ni alloy system across 31 temperatures (700K → 3700K, ΔT=100K).
+Co-Cr-Fe-Ni alloy system across 31 temperatures (700K → 3300K, ΔT=100K).
 
 TENSOR STRUCTURE:
   G_LIQ[i, j, k, t] = Molar Gibbs energy of LIQUID phase (J/mol)
@@ -17,7 +17,7 @@ TENSOR STRUCTURE:
     i ∈ [0, n_co-1]: Cobalt mole fraction index (x_Co = co_vals[i])
     j ∈ [0, n_cr-1]: Chromium mole fraction index (x_Cr = cr_vals[j])
     k ∈ [0, n_fe-1]: Iron mole fraction index (x_Fe = fe_vals[k])
-    t ∈ [0, 30]: Temperature index (T = T_vals[t] ∈ {700, 800, ..., 3700} K)
+    t ∈ [0, 30]: Temperature index (T = T_vals[t] ∈ {700, 800, ..., 3300} K)
 
 COMPOSITION CONSTRAINT:
   x_Co + x_Cr + x_Fe + x_Ni = 1.0  →  x_Ni = 1 - (x_Co + x_Cr + x_Fe) ≥ 0
@@ -27,7 +27,7 @@ COMPOSITION CONSTRAINT:
 
 REAL DATA CHARACTERISTICS (from Gibbs_*.csv files):
 ---------------------------------------------------
-Temperature Grid: T_vals = [700, 800, 900, ..., 3600, 3700] K (31 points)
+Temperature Grid: T_vals = [700, 800, 900, ..., 3600, 3300] K (31 points)
 Composition Grid: Step ≈ 0.01 in Co/Cr/Fe, truncated by simplex constraint
 
 THERMODYNAMIC REGIMES OBSERVED:
@@ -48,7 +48,7 @@ THERMODYNAMIC REGIMES OBSERVED:
        G_LIQ = -85,716 J/mol, G_FCC = -88,046 J/mol → ΔG = +2,330 J/mol (FCC)
      - Physical interpretation: Entropic driving force (-T·S) competes with enthalpy
 
-  3. HIGH TEMPERATURE (1700-3700 K): LIQUID-DOMINATED
+  3. HIGH TEMPERATURE (1700-3300 K): LIQUID-DOMINATED
      - |G| ≈ 140-175 kJ/mol (large negative values from -T·S term)
      - G_LIQ < G_FCC consistently → ΔG < 0
      - Example at 2200K, Co=0.16, Cr=0.27, Fe=0.22, Ni=0.35:
@@ -182,7 +182,7 @@ PHASE_COLORS_RGBA = {
 @st.cache_data(ttl=3600)
 def load_all_data(csv_dir=CSV_FILES_DIR):
     """
-    Load Gibbs energy data from 31 CSV files (Gibbs_700K.csv to Gibbs_3700K.csv).
+    Load Gibbs energy data from 31 CSV files (Gibbs_700K.csv to Gibbs_3300K.csv).
     
     Expected file format per CSV:
       Columns: Co, Cr, Fe, Ni, G_LIQ, G_FCC
@@ -196,11 +196,11 @@ def load_all_data(csv_dir=CSV_FILES_DIR):
     files = sorted(glob.glob(os.path.join(csv_dir, "Gibbs_*.csv")))
     
     if not files:
-        st.error(f"❌ No CSV files found in `{csv_dir}`.\n\nExpected files: Gibbs_700K.csv, Gibbs_800K.csv, ..., Gibbs_3700K.csv")
+        st.error(f"❌ No CSV files found in `{csv_dir}`.\n\nExpected files: Gibbs_700K.csv, Gibbs_800K.csv, ..., Gibbs_3300K.csv")
         st.stop()
     
     # Verify we have the expected 31 temperature files
-    expected_temps = list(range(700, 3701, 100))  # [700, 800, ..., 3700]
+    expected_temps = list(range(700, 3701, 100))  # [700, 800, ..., 3300]
     found_temps = []
     
     for f in files:
@@ -310,7 +310,7 @@ def build_tensor_data(df):
     co_vals = sorted(df["Co"].unique())
     cr_vals = sorted(df["Cr"].unique())
     fe_vals = sorted(df["Fe"].unique())
-    T_vals = sorted(df["T"].unique())  # Should be [700, 800, ..., 3700]
+    T_vals = sorted(df["T"].unique())  # Should be [700, 800, ..., 3300]
     
     n_co, n_cr, n_fe, n_T = len(co_vals), len(cr_vals), len(fe_vals), len(T_vals)
     
@@ -357,7 +357,7 @@ def build_tensor_data(df):
         'co_vals': co_vals,
         'cr_vals': cr_vals,
         'fe_vals': fe_vals,
-        'T_vals': T_vals,  # [700, 800, ..., 3700] - critical for interpretation
+        'T_vals': T_vals,  # [700, 800, ..., 3300] - critical for interpretation
         'co_step': co_step,
         'cr_step': cr_step,
         'fe_step': fe_step,
@@ -1014,7 +1014,7 @@ st.markdown(r"""
 🔹 **LIQUID surfaces** become **fluid & expanded** at high T (entropy-dominated regime)  
 🔹 **ΔG = 0 boundary** (gold) marks the exact phase transition frontier  
 
-*Data: 31 temperatures (700-3700K), ~170K compositions each, CALPHAD-computed Gibbs energies*
+*Data: 31 temperatures (700-3300K), ~170K compositions each, CALPHAD-computed Gibbs energies*
 """)
 
 with st.sidebar:
@@ -1025,7 +1025,7 @@ with st.sidebar:
     preset = st.selectbox("Load Preset", [
         "Custom", 
         "Low-T FCC Crystal (700-1000K)", 
-        "High-T Liquid Melt (2200-3700K)", 
+        "High-T Liquid Melt (2200-3300K)", 
         "Transition Region (1400-1600K)", 
         "Maximum Contrast"
     ], index=0)
@@ -1034,7 +1034,7 @@ with st.sidebar:
     st.subheader("🌡️ Temperature")
     if preset == "Low-T FCC Crystal (700-1000K)":
         default_T = min(T for T in T_list if T <= 1000) if any(T <= 1000 for T in T_list) else T_min
-    elif preset == "High-T Liquid Melt (2200-3700K)":
+    elif preset == "High-T Liquid Melt (2200-3300K)":
         default_T = max(T for T in T_list if T >= 2200) if any(T >= 2200 for T in T_list) else T_max
     elif preset == "Transition Region (1400-1600K)":
         default_T = min(T_list, key=lambda T: abs(T - 1500))
