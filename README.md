@@ -21,6 +21,11 @@
 
 [![meaningtowords](https://img.shields.io/badge/Gphase-v9.0-green)](https://free-energy-tensor-visualization9.streamlit.app/) ( Temperature-morphed Free energy Tensor Visualization and ThermoSpherical Harmonics, G Tensor Quantification and Computation )
 
+[![meaningtowords](https://img.shields.io/badge/Gphase-v10.0-green)](https://free-energy-tensor-visualization10.streamlit.app/) ( Advanced v9, Temperature-morphed Free energy Tensor Visualization and ThermoSpherical Harmonics, G Tensor Quantification and Computation )
+
+[![meaningtowords](https://img.shields.io/badge/Gphase-v11.0-green)](https://free-energy-tensor-visualization11.streamlit.app/) ( Advanced v10, Temperature-morphed Free energy Tensor Visualization and ThermoSpherical Harmonics, G Tensor Quantification and Computation, Applications of Tensor Knowledge in Additive Manufacturing )
+
+
 
 
 # Visualization of Driving Force (F per unit Interface Area = delta_G (J/m3) * area (m2)) : v1-v4 consume too much memory, and need upgrade on computational efficiency
