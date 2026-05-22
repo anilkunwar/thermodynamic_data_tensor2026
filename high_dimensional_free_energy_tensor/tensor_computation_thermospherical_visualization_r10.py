@@ -749,18 +749,18 @@ if SCIPY_AVAILABLE:
     def sample_g_on_sphere(interp_liq, interp_fcc, R_fixed, n_theta=60, n_phi=60):
         """
         Sample Gibbs energy on spherical composition grid.
-        
+
         Maps spherical coordinates to composition space:
           x = R·sin(φ)·cos(θ) → Co
           y = R·sin(φ)·sin(θ) → Cr  
           z = R·cos(φ) → Fe
           Ni = 1 - (Co + Cr + Fe) [implicit]
-        
+
         Args:
             interp_liq, interp_fcc: Interpolators for Gibbs energies
             R_fixed: Fixed radius for spherical sampling
             n_theta, n_phi: Angular resolution
-        
+
         Returns:
             TH, PH: Meshgrid of spherical angles
             G_stable: Gibbs energy of stable phase at each point
@@ -768,30 +768,39 @@ if SCIPY_AVAILABLE:
             valid: Boolean mask for valid simplex points
             sphere_pts: Cartesian composition coordinates
         """
+        # ROBUSTNESS: Clip R_fixed to ensure spherical points stay within valid simplex
+        # Max radius where all points have Co+Cr+Fe ≤ 1 and all coordinates ≥ 0
+        R_max_safe = 1.0 / np.sqrt(3.0)  # ~0.577
+        if R_fixed > R_max_safe:
+            R_fixed = R_max_safe
+
         theta = np.linspace(0, 2*np.pi, n_theta)
         phi = np.linspace(0, np.pi, n_phi)
         TH, PH = np.meshgrid(theta, phi)
-        
+
         # Map spherical to Cartesian composition coordinates
         x = R_fixed * np.sin(PH) * np.cos(TH)  # Co
         y = R_fixed * np.sin(PH) * np.sin(TH)  # Cr
         z = R_fixed * np.cos(PH)                # Fe
         pts = np.column_stack([x.ravel(), y.ravel(), z.ravel()])
-        
-        # Apply simplex constraint
+
+        # Apply simplex constraint: Co + Cr + Fe ≤ 1 (ensures Ni ≥ 0)
         valid = (pts[:,0] + pts[:,1] + pts[:,2]) <= 1.0
-        
+
+        # Also ensure all coordinates are non-negative (composition constraint)
+        valid = valid & (pts[:, 0] >= 0) & (pts[:, 1] >= 0) & (pts[:, 2] >= 0)
+
         # Interpolate Gibbs energies
         G_liq = interp_liq(pts) if interp_liq is not None else np.full(len(pts), np.nan)
         G_fcc = interp_fcc(pts) if interp_fcc is not None else np.full(len(pts), np.nan)
-        
+
         # Determine stable phase and driving force
         G_stable = np.where(G_liq <= G_fcc, G_liq, G_fcc)
         dG = G_liq - G_fcc
-        
-        # Combine validity masks
+
+        # Combine validity masks: must be in simplex AND have valid interpolated data
         valid = valid & ~np.isnan(G_stable)
-        
+
         return (TH, PH, 
                 G_stable.reshape(TH.shape), 
                 dG.reshape(TH.shape), 
@@ -802,14 +811,14 @@ if SCIPY_AVAILABLE:
     def fit_sh_coeffs(theta_vals, phi_vals, g_vals, l_max=3):
         """
         Fit spherical harmonic coefficients to Gibbs energy data.
-        
+
         Solves least-squares problem: g ≈ Σₗ₌₀ˡᵐᵃˣ Σₘ₌₋ₗˡ cₗₘ·Yₗₘ(θ,φ)
-        
+
         Args:
             theta_vals, phi_vals: Spherical coordinates of data points
             g_vals: Gibbs energy values at those points
             l_max: Maximum spherical harmonic degree
-        
+
         Returns:
             coeffs: Fitted coefficients array
             l_max: Actual maximum degree used
@@ -817,16 +826,16 @@ if SCIPY_AVAILABLE:
         theta_flat = theta_vals.ravel()
         phi_flat = phi_vals.ravel()
         g_flat = g_vals.ravel()
-        
+
         # Filter valid (non-NaN) data
         valid = ~np.isnan(g_flat)
         theta_flat = theta_flat[valid]
         phi_flat = phi_flat[valid]
         g_flat = g_flat[valid]
-        
+
         if len(theta_flat) == 0:
             return None, l_max
-        
+
         # Build design matrix: each row = spherical harmonics at one point
         A = []
         for t, p in zip(theta_flat, phi_flat):
@@ -837,10 +846,41 @@ if SCIPY_AVAILABLE:
                     row.append(y)
             A.append(row)
         A = np.array(A)
-        
-        # Solve least squares
-        coeffs, _, _, _ = linalg.lstsq(A, g_flat, rcond=None)
-        
+
+        # ROBUSTNESS: Check if we have enough data points for the number of basis functions
+        n_basis = (l_max + 1) ** 2
+        if A.shape[0] < n_basis:
+            st.warning(f"⚠️ Insufficient valid data points ({A.shape[0]}) for l_max={l_max} (needs ≥{n_basis}). Reducing l_max.")
+            # Reduce l_max until we have enough points
+            while l_max > 0 and A.shape[0] < (l_max + 1) ** 2:
+                l_max -= 1
+            if l_max < 0:
+                return None, 0
+            # Rebuild A with reduced l_max
+            A = []
+            for t, p in zip(theta_flat, phi_flat):
+                row = []
+                for l in range(l_max+1):
+                    for m in range(-l, l+1):
+                        y = get_real_sph_harm(l, m, t, p)
+                        row.append(y)
+                A.append(row)
+            A = np.array(A)
+
+        # ROBUSTNESS: Check for empty or degenerate matrix
+        if A.size == 0 or A.shape[0] == 0 or A.shape[1] == 0:
+            return None, l_max
+
+        # Solve least squares with robust handling
+        try:
+            rank_A = np.linalg.matrix_rank(A)
+            if rank_A < A.shape[1]:
+                st.warning(f"⚠️ Design matrix is rank-deficient (rank={rank_A} < cols={A.shape[1]}). Using minimum-norm solution.")
+            coeffs, residuals, rank, s = linalg.lstsq(A, g_flat, rcond=None)
+        except Exception as e:
+            st.warning(f"⚠️ lstsq failed: {e}. Returning None.")
+            return None, l_max
+
         return coeffs, l_max
 
     def reconstruct_sh_surface(theta_grid, phi_grid, coeffs, l_max):
@@ -1352,9 +1392,24 @@ with tab_main:
             interp_liq, interp_fcc, sh_R_fixed, sh_n_theta, sh_n_phi
         )
         
+        # Pre-check: ensure we have valid interpolated data before fitting
+        g_liq_raw = interp_liq(sphere_pts).reshape(TH.shape)
+        g_fcc_raw = interp_fcc(sphere_pts).reshape(TH.shape)
+
+        n_valid_liq = np.sum(~np.isnan(g_liq_raw))
+        n_valid_fcc = np.sum(~np.isnan(g_fcc_raw))
+        n_needed_liq = (l_max_liq + 1) ** 2
+        n_needed_fcc = (l_max_fcc + 1) ** 2
+
+        if n_valid_liq < n_needed_liq or n_valid_fcc < n_needed_fcc:
+            st.warning(f"⚠️ Insufficient valid interpolation points for SH fitting. LIQUID: {n_valid_liq} valid (need ≥{n_needed_liq}) | FCC: {n_valid_fcc} valid (need ≥{n_needed_fcc}). Reduce Base Radius or increase resolution.")
+            l_max_liq = max(1, int(np.floor(np.sqrt(n_valid_liq)) - 1)) if n_valid_liq > 0 else 1
+            l_max_fcc = max(1, int(np.floor(np.sqrt(n_valid_fcc)) - 1)) if n_valid_fcc > 0 else 1
+            st.info(f"Auto-reduced l_max: LIQUID l={l_max_liq}, FCC l={l_max_fcc}")
+
         # Fit spherical harmonics for each phase
-        coeffs_liq, _ = fit_sh_coeffs(TH, PH, interp_liq(sphere_pts).reshape(TH.shape), l_max=l_max_liq)
-        coeffs_fcc, _ = fit_sh_coeffs(TH, PH, interp_fcc(sphere_pts).reshape(TH.shape), l_max=l_max_fcc)
+        coeffs_liq, l_max_liq = fit_sh_coeffs(TH, PH, g_liq_raw, l_max=l_max_liq)
+        coeffs_fcc, l_max_fcc = fit_sh_coeffs(TH, PH, g_fcc_raw, l_max=l_max_fcc)
         
         if coeffs_liq is not None and coeffs_fcc is not None:
             G_liq_sh = reconstruct_sh_surface(TH, PH, coeffs_liq, l_max_liq)
@@ -1428,7 +1483,7 @@ with tab_main:
                         hovertemplate="Data: Co=%{x:.3f} Cr=%{y:.3f} Fe=%{z:.3f}<extra></extra>"
                     ))
         else:
-            st.warning("⚠️ Spherical harmonic fitting failed. Try adjusting l_max or resolution.")
+            st.warning("⚠️ Spherical harmonic fitting failed. Try reducing Base Radius to ≤0.55, increasing resolution, or reducing l_max.")
         
         scene_x, scene_y, scene_z = "x<sub>Co</sub>", "x<sub>Cr</sub>", "x<sub>Fe</sub>"
     
@@ -1440,6 +1495,14 @@ with tab_main:
             interp_liq, interp_fcc, sh_R_fixed, sh_n_theta, sh_n_phi
         )
         
+        # Pre-check: ensure sufficient valid data points
+        n_valid_dg = np.sum(~np.isnan(dG_grid))
+        n_needed = (sh_l_max + 1) ** 2
+
+        if n_valid_dg < n_needed:
+            st.warning(f"⚠️ Insufficient valid points for ΔG SH fitting: {n_valid_dg} valid (need ≥{n_needed}). Auto-reducing l_max.")
+            sh_l_max = max(1, int(np.floor(np.sqrt(n_valid_dg)) - 1)) if n_valid_dg > 0 else 1
+
         coeffs_dG, l_max = fit_sh_coeffs(TH, PH, dG_grid, l_max=sh_l_max)
         if coeffs_dG is not None:
             dG_smooth = reconstruct_sh_surface(TH, PH, coeffs_dG, l_max)
@@ -1491,7 +1554,7 @@ with tab_main:
             Deformation amplitude = magnitude of driving force for phase transformation
             """)
         else:
-            st.warning("⚠️ SH fitting failed for ΔG")
+            st.warning("⚠️ SH fitting failed for ΔG. Try reducing l_max or increasing resolution.")
         
         scene_x, scene_y, scene_z = "x<sub>Co</sub>", "x<sub>Cr</sub>", "x<sub>Fe</sub>"
     
@@ -1575,7 +1638,7 @@ with tab_main:
         G_fcc = G_fcc[valid]
         G_stable = np.minimum(G_liq, G_fcc)
         stable = np.where(G_liq <= G_fcc, "LIQUID", "FCC")
-        dG = G_liq - G_fCC
+        dG = G_liq - G_fcc
         
         if show_uncertainty and HULL_AVAILABLE:
             proximity = compute_data_proximity(pts, all_pts, max_dist=0.2)
@@ -1668,8 +1731,21 @@ with tab_main:
                 l_max_liq = max(1, int(sh_l_max - 1.5 * T_f))
                 l_max_fcc = max(2, int(sh_l_max + 1.0 * (1.0 - T_f)))
                 
-                coeffs_liq, _ = fit_sh_coeffs(TH, PH, interp_liq_f(sphere_pts).reshape(TH.shape), l_max=l_max_liq)
-                coeffs_fcc, _ = fit_sh_coeffs(TH, PH, interp_fcc_f(sphere_pts).reshape(TH.shape), l_max=l_max_fcc)
+                g_liq_raw = interp_liq_f(sphere_pts).reshape(TH.shape)
+                g_fcc_raw = interp_fcc_f(sphere_pts).reshape(TH.shape)
+
+                n_valid_liq = np.sum(~np.isnan(g_liq_raw))
+                n_valid_fcc = np.sum(~np.isnan(g_fcc_raw))
+                n_needed_liq = (l_max_liq + 1) ** 2
+                n_needed_fcc = (l_max_fcc + 1) ** 2
+
+                if n_valid_liq < n_needed_liq:
+                    l_max_liq = max(1, int(np.floor(np.sqrt(n_valid_liq)) - 1)) if n_valid_liq > 0 else 1
+                if n_valid_fcc < n_needed_fcc:
+                    l_max_fcc = max(1, int(np.floor(np.sqrt(n_valid_fcc)) - 1)) if n_valid_fcc > 0 else 1
+
+                coeffs_liq, l_max_liq = fit_sh_coeffs(TH, PH, g_liq_raw, l_max=l_max_liq)
+                coeffs_fcc, l_max_fcc = fit_sh_coeffs(TH, PH, g_fcc_raw, l_max=l_max_fcc)
                 
                 if coeffs_liq is None or coeffs_fcc is None:
                     continue
@@ -1708,8 +1784,21 @@ with tab_main:
                 T_i = (T_init - T_min) / T_range if T_range > 0 else 0.5
                 l_max_liq = max(1, int(sh_l_max - 1.5 * T_i))
                 l_max_fcc = max(2, int(sh_l_max + 1.0 * (1.0 - T_i)))
-                coeffs_liq, _ = fit_sh_coeffs(TH, PH, interp_liq_i(sphere_pts).reshape(TH.shape), l_max=l_max_liq)
-                coeffs_fcc, _ = fit_sh_coeffs(TH, PH, interp_fcc_i(sphere_pts).reshape(TH.shape), l_max=l_max_fcc)
+                g_liq_raw = interp_liq_i(sphere_pts).reshape(TH.shape)
+                g_fcc_raw = interp_fcc_i(sphere_pts).reshape(TH.shape)
+
+                n_valid_liq = np.sum(~np.isnan(g_liq_raw))
+                n_valid_fcc = np.sum(~np.isnan(g_fcc_raw))
+                n_needed_liq = (l_max_liq + 1) ** 2
+                n_needed_fcc = (l_max_fcc + 1) ** 2
+
+                if n_valid_liq < n_needed_liq:
+                    l_max_liq = max(1, int(np.floor(np.sqrt(n_valid_liq)) - 1)) if n_valid_liq > 0 else 1
+                if n_valid_fcc < n_needed_fcc:
+                    l_max_fcc = max(1, int(np.floor(np.sqrt(n_valid_fcc)) - 1)) if n_valid_fcc > 0 else 1
+
+                coeffs_liq, l_max_liq = fit_sh_coeffs(TH, PH, g_liq_raw, l_max=l_max_liq)
+                coeffs_fcc, l_max_fcc = fit_sh_coeffs(TH, PH, g_fcc_raw, l_max=l_max_fcc)
                 G_liq_sh = reconstruct_sh_surface(TH, PH, coeffs_liq, l_max_liq)
                 G_fcc_sh = reconstruct_sh_surface(TH, PH, coeffs_fcc, l_max_fcc)
                 R_liq = get_liquid_radius(G_liq_sh, sh_R_fixed, T_i)
