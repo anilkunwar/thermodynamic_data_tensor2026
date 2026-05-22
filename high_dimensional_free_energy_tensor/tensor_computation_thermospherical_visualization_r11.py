@@ -439,10 +439,16 @@ def svd_rank_analysis(matrix, threshold=0.01):
     
     return rank, s, s_norm
 
-def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6):
+def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, use_weighted=False, reg=1e-8):
     """
     4-way Canonical Polyadic Decomposition via Alternating Least Squares.
     
+    Args (additional):
+        use_weighted: (bool, placeholder) Whether to use weighted ALS for missing entries.
+                      Currently not implemented - falls back to standard ALS.
+        reg: (float, placeholder) Regularization parameter for ill-conditioned steps.
+             Currently not implemented.
+
     DECOMPOSITION FORMULA:
       tensor[i,j,k,t] ≈ Σᵣ₌₁ᴿ λᵣ · A[i,r] · B[j,r] · C[k,r] · D[t,r]
     
