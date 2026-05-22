@@ -7,7 +7,7 @@ Thermodynamic Data Tensor Analysis with Canonical Polyadic Decomposition (CPD)
 THERMODYNAMIC DATA TENSOR (TDT) SPECIFICATION:
 ----------------------------------------------
 The code processes CALPHAD-computed Gibbs energy data for the quaternary 
-Co-Cr-Fe-Ni alloy system across 31 temperatures (700K → 3300K, ΔT=100K).
+Co-Cr-Fe-Ni alloy system across 31 temperatures (700K → 3700K, ΔT=100K).
 
 TENSOR STRUCTURE:
   G_LIQ[i, j, k, t] = Molar Gibbs energy of LIQUID phase (J/mol)
@@ -17,7 +17,7 @@ TENSOR STRUCTURE:
     i ∈ [0, n_co-1]: Cobalt mole fraction index (x_Co = co_vals[i])
     j ∈ [0, n_cr-1]: Chromium mole fraction index (x_Cr = cr_vals[j])
     k ∈ [0, n_fe-1]: Iron mole fraction index (x_Fe = fe_vals[k])
-    t ∈ [0, 30]: Temperature index (T = T_vals[t] ∈ {700, 800, ..., 3300} K)
+    t ∈ [0, 30]: Temperature index (T = T_vals[t] ∈ {700, 800, ..., 3700} K)
 
 COMPOSITION CONSTRAINT:
   x_Co + x_Cr + x_Fe + x_Ni = 1.0  →  x_Ni = 1 - (x_Co + x_Cr + x_Fe) ≥ 0
@@ -27,7 +27,7 @@ COMPOSITION CONSTRAINT:
 
 REAL DATA CHARACTERISTICS (from Gibbs_*.csv files):
 ---------------------------------------------------
-Temperature Grid: T_vals = [700, 800, 900, ..., 3600, 3300] K (31 points)
+Temperature Grid: T_vals = [700, 800, 900, ..., 3600, 3700] K (31 points)
 Composition Grid: Step ≈ 0.01 in Co/Cr/Fe, truncated by simplex constraint
 
 THERMODYNAMIC REGIMES OBSERVED:
@@ -48,7 +48,7 @@ THERMODYNAMIC REGIMES OBSERVED:
        G_LIQ = -85,716 J/mol, G_FCC = -88,046 J/mol → ΔG = +2,330 J/mol (FCC)
      - Physical interpretation: Entropic driving force (-T·S) competes with enthalpy
 
-  3. HIGH TEMPERATURE (1700-3300 K): LIQUID-DOMINATED
+  3. HIGH TEMPERATURE (1700-3700 K): LIQUID-DOMINATED
      - |G| ≈ 140-175 kJ/mol (large negative values from -T·S term)
      - G_LIQ < G_FCC consistently → ΔG < 0
      - Example at 2200K, Co=0.16, Cr=0.27, Fe=0.22, Ni=0.35:
@@ -182,7 +182,7 @@ PHASE_COLORS_RGBA = {
 @st.cache_data(ttl=3600)
 def load_all_data(csv_dir=CSV_FILES_DIR):
     """
-    Load Gibbs energy data from 31 CSV files (Gibbs_700K.csv to Gibbs_3300K.csv).
+    Load Gibbs energy data from 31 CSV files (Gibbs_700K.csv to Gibbs_3700K.csv).
     
     Expected file format per CSV:
       Columns: Co, Cr, Fe, Ni, G_LIQ, G_FCC
@@ -196,11 +196,11 @@ def load_all_data(csv_dir=CSV_FILES_DIR):
     files = sorted(glob.glob(os.path.join(csv_dir, "Gibbs_*.csv")))
     
     if not files:
-        st.error(f"❌ No CSV files found in `{csv_dir}`.\n\nExpected files: Gibbs_700K.csv, Gibbs_800K.csv, ..., Gibbs_3300K.csv")
+        st.error(f"❌ No CSV files found in `{csv_dir}`.\n\nExpected files: Gibbs_700K.csv, Gibbs_800K.csv, ..., Gibbs_3700K.csv")
         st.stop()
     
     # Verify we have the expected 31 temperature files
-    expected_temps = list(range(300, 3301, 100))  # [700, 800, ..., 3300]
+    expected_temps = list(range(700, 3701, 100))  # [700, 800, ..., 3700]
     found_temps = []
     
     for f in files:
@@ -310,7 +310,7 @@ def build_tensor_data(df):
     co_vals = sorted(df["Co"].unique())
     cr_vals = sorted(df["Cr"].unique())
     fe_vals = sorted(df["Fe"].unique())
-    T_vals = sorted(df["T"].unique())  # Should be [700, 800, ..., 3300]
+    T_vals = sorted(df["T"].unique())  # Should be [700, 800, ..., 3700]
     
     n_co, n_cr, n_fe, n_T = len(co_vals), len(cr_vals), len(fe_vals), len(T_vals)
     
@@ -357,7 +357,7 @@ def build_tensor_data(df):
         'co_vals': co_vals,
         'cr_vals': cr_vals,
         'fe_vals': fe_vals,
-        'T_vals': T_vals,  # [700, 800, ..., 3300] - critical for interpretation
+        'T_vals': T_vals,  # [700, 800, ..., 3700] - critical for interpretation
         'co_step': co_step,
         'cr_step': cr_step,
         'fe_step': fe_step,
@@ -1009,10 +1009,31 @@ def get_fcc_radius(G_sh, sh_R_fixed, T_factor):
 # Expanded from theoretical framework
 # =============================================
 
-def extract_transition_surface_from_cpd(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
-                                         D_liq, D_fcc, lam_liq, lam_fcc,
-                                         co_vals, cr_vals, fe_vals, T_vals,
-                                         composition_grid_resolution=25):
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_extract_transition(A_liq_tuple, A_fcc_tuple, B_liq_tuple, B_fcc_tuple,
+                                C_liq_tuple, C_fcc_tuple, D_liq_tuple, D_fcc_tuple,
+                                lam_liq_tuple, lam_fcc_tuple,
+                                co_vals_tuple, cr_vals_tuple, fe_vals_tuple, T_vals_tuple,
+                                composition_grid_resolution=25):
+    """Cached wrapper for transition surface extraction."""
+    # Convert tuples back to arrays
+    A_liq = np.array(A_liq_tuple); A_fcc = np.array(A_fcc_tuple)
+    B_liq = np.array(B_liq_tuple); B_fcc = np.array(B_fcc_tuple)
+    C_liq = np.array(C_liq_tuple); C_fcc = np.array(C_fcc_tuple)
+    D_liq = np.array(D_liq_tuple); D_fcc = np.array(D_fcc_tuple)
+    lam_liq = np.array(lam_liq_tuple); lam_fcc = np.array(lam_fcc_tuple)
+    co_vals = np.array(co_vals_tuple); cr_vals = np.array(cr_vals_tuple)
+    fe_vals = np.array(fe_vals_tuple); T_vals = np.array(T_vals_tuple)
+
+    return _extract_transition_impl(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                                     D_liq, D_fcc, lam_liq, lam_fcc,
+                                     co_vals, cr_vals, fe_vals, T_vals,
+                                     composition_grid_resolution)
+
+def _extract_transition_impl(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                             D_liq, D_fcc, lam_liq, lam_fcc,
+                             co_vals, cr_vals, fe_vals, T_vals,
+                             composition_grid_resolution=25):
     """
     Extract T*(x_Co, x_Cr, x_Fe) surface where G_LIQ = G_FCC using CPD factors.
 
@@ -1122,6 +1143,22 @@ def extract_transition_surface_from_cpd(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc
                     delta_G_grid[i, j, k, t_idx] = delta_G(float(T_val))
 
     return T_melt, valid_simplex, delta_G_grid
+
+def extract_transition_surface_from_cpd(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                                         D_liq, D_fcc, lam_liq, lam_fcc,
+                                         co_vals, cr_vals, fe_vals, T_vals,
+                                         composition_grid_resolution=25):
+    """Public interface with caching."""
+    # Convert arrays to tuples for caching
+    return _cached_extract_transition(
+        tuple(A_liq.ravel()), tuple(A_fcc.ravel()),
+        tuple(B_liq.ravel()), tuple(B_fcc.ravel()),
+        tuple(C_liq.ravel()), tuple(C_fcc.ravel()),
+        tuple(D_liq.ravel()), tuple(D_fcc.ravel()),
+        tuple(lam_liq), tuple(lam_fcc),
+        tuple(co_vals), tuple(cr_vals), tuple(fe_vals), tuple(T_vals),
+        composition_grid_resolution
+    )
 
 
 def compute_composition_sensitivity(A, B, C, lam, co_vals, cr_vals, fe_vals, R=6):
@@ -1291,7 +1328,7 @@ def plot_transition_surface_3d(T_melt, valid_mask, co_vals, cr_vals, fe_vals,
     x = np.linspace(0, 1, res)
 
     # Flatten valid points
-    Co_flat = Co_grid = np.zeros(0)
+    Co_flat = np.zeros(0)
     Cr_flat = np.zeros(0)
     Fe_flat = np.zeros(0)
     T_flat = np.zeros(0)
@@ -1954,7 +1991,7 @@ st.markdown(r"""
 🔹 **LIQUID surfaces** become **fluid & expanded** at high T (entropy-dominated regime)  
 🔹 **ΔG = 0 boundary** (gold) marks the exact phase transition frontier  
 
-*Data: 31 temperatures (700-3300K), ~170K compositions each, CALPHAD-computed Gibbs energies*
+*Data: 31 temperatures (700-3700K), ~170K compositions each, CALPHAD-computed Gibbs energies*
 """)
 
 with st.sidebar:
@@ -1965,7 +2002,7 @@ with st.sidebar:
     preset = st.selectbox("Load Preset", [
         "Custom", 
         "Low-T FCC Crystal (700-1000K)", 
-        "High-T Liquid Melt (2200-3300K)", 
+        "High-T Liquid Melt (2200-3700K)", 
         "Transition Region (1400-1600K)", 
         "Maximum Contrast"
     ], index=0)
@@ -1974,7 +2011,7 @@ with st.sidebar:
     st.subheader("🌡️ Temperature")
     if preset == "Low-T FCC Crystal (700-1000K)":
         default_T = min(T for T in T_list if T <= 1000) if any(T <= 1000 for T in T_list) else T_min
-    elif preset == "High-T Liquid Melt (2200-3300K)":
+    elif preset == "High-T Liquid Melt (2200-3700K)":
         default_T = max(T for T in T_list if T >= 2200) if any(T >= 2200 for T in T_list) else T_max
     elif preset == "Transition Region (1400-1600K)":
         default_T = min(T_list, key=lambda T: abs(T - 1500))
@@ -2971,6 +3008,11 @@ with tab_tensor:
     """)
     
     phase_for_tensor = st.selectbox("Select Phase for Analysis", ["G_LIQUID", "G_FCC"], index=0)
+
+    # Convenience: run both phases automatically
+    auto_both = st.toggle("🔄 Auto-run both phases", value=False,
+                         help="Automatically run CPD for both LIQUID and FCC phases sequentially")
+
     tensor_sel = tdt_data['G_LIQ'] if phase_for_tensor == "G_LIQUID" else tdt_data['G_FCC']
     
     threshold = st.slider("Singular Value Threshold (% of max)", 0.01, 5.0, 0.3, 0.1, 
@@ -3083,107 +3125,153 @@ with tab_tensor:
     max_iter = st.slider("Max ALS Iterations", 20, 200, 100, 10)
     
     if st.button("⚙️ Run CPD-ALS (may take 1-2 min for large tensors)", use_container_width=True):
-        with st.spinner(f"Running CP-ALS with R={R_test}..."):
-            # Center and scale for numerical stability
-            tensor_mean = np.nanmean(tensor_sel)
-            tensor_std = np.nanstd(tensor_sel)
-            tensor_norm = (tensor_sel - tensor_mean) / (tensor_std + 1e-12)
-            
-            A, B, C, D, lam, error = cpd_als_4d(tensor_norm, R_test, max_iter=max_iter, tol=1e-5)
-            
-            # Reconstruct
-            I, J, K, L = tensor_norm.shape
-            recon = np.zeros_like(tensor_norm)
-            mask = ~np.isnan(tensor_norm)
-            
-            for r in range(R_test):
-                recon += lam[r] * np.outer(A[:, r], np.kron(np.kron(D[:, r], C[:, r]), B[:, r])).reshape(I, J, K, L)
-            
-            # Error metrics
-            rel_error = np.sqrt(np.sum(mask * (tensor_norm - recon)**2) / np.sum(mask))
-            abs_error = rel_error * tensor_std
-            
-            st.success(f"✅ CPD complete! Relative error: {rel_error:.6f} | Absolute error: {abs_error:.2f} J/mol")
-            
-            # Display factor matrices
-            st.subheader("Factor Matrices")
-            
-            tabs = st.tabs(["A (Co)", "B (Cr)", "C (Fe)", "D (T)", "lambda (Weights)"])
-            
-            with tabs[0]:
-                df_A = pd.DataFrame(A, columns=[f"r={r+1}" for r in range(R_test)])
-                df_A.index = [f"Co={v:.3f}" for v in tdt_data['co_vals']]
-                st.dataframe(df_A.style.background_gradient(cmap='RdBu_r', axis=None), use_container_width=True)
-                st.caption("Each column = composition dependence of one CPD component")
-            
-            with tabs[1]:
-                df_B = pd.DataFrame(B, columns=[f"r={r+1}" for r in range(R_test)])
-                df_B.index = [f"Cr={v:.3f}" for v in tdt_data['cr_vals']]
-                st.dataframe(df_B.style.background_gradient(cmap='RdBu_r', axis=None), use_container_width=True)
-            
-            with tabs[2]:
-                df_C = pd.DataFrame(C, columns=[f"r={r+1}" for r in range(R_test)])
-                df_C.index = [f"Fe={v:.3f}" for v in tdt_data['fe_vals']]
-                st.dataframe(df_C.style.background_gradient(cmap='RdBu_r', axis=None), use_container_width=True)
-            
-            with tabs[3]:
-                df_D = pd.DataFrame(D, columns=[f"r={r+1}" for r in range(R_test)])
-                df_D.index = [f"T={v}K" for v in tdt_data['T_vals']]
-                st.dataframe(df_D.style.background_gradient(cmap='RdBu_r', axis=None), use_container_width=True)
-                st.caption("Temperature factors: r=1≈constant, r=2≈linear in T, r=3≈curvature")
-            
-            with tabs[4]:
-                df_lam = pd.DataFrame({'Component': [f"r={r+1}" for r in range(R_test)], 'Weight': lam})
-                st.dataframe(df_lam, use_container_width=True)
-                
-                fig_weights = go.Figure(go.Bar(
-                    x=[f"r={r+1}" for r in range(R_test)],
-                    y=lam,
-                    marker_color='teal'
-                ))
-                fig_weights.update_layout(title="CPD Component Weights (lambda)", template="plotly_white")
-                st.plotly_chart(fig_weights, use_container_width=True)
-            
-            # Reconstruction quality visualization
-            st.subheader("Reconstruction Quality")
-            T_slice = st.selectbox("Select Temperature Slice", tdt_data['T_vals'])
-            t_idx = tdt_data['T_vals'].index(T_slice)
-            
-            orig_slice = tensor_sel[:,:,:,t_idx]
-            recon_slice = recon[:,:,:,t_idx] * tensor_std + tensor_mean
-            
-            valid_mask_slice = ~np.isnan(orig_slice)
-            orig_valid = orig_slice[valid_mask_slice]
-            recon_valid = recon_slice[valid_mask_slice]
-            
-            fig_scatter = go.Figure()
-            fig_scatter.add_trace(go.Scatter(
-                x=orig_valid, y=recon_valid,
-                mode='markers',
-                marker=dict(size=4, color='steelblue', opacity=0.5),
-                name='Data points'
+        phases_to_run = []
+        if auto_both:
+            phases_to_run = [
+                ("G_LIQUID", "LIQ", tdt_data['G_LIQ']),
+                ("G_FCC", "FCC", tdt_data['G_FCC'])
+            ]
+        else:
+            phase_key = "LIQ" if phase_for_tensor == "G_LIQUID" else "FCC"
+            tensor_sel_phase = tdt_data['G_LIQ'] if phase_for_tensor == "G_LIQUID" else tdt_data['G_FCC']
+            phases_to_run = [(phase_for_tensor, phase_key, tensor_sel_phase)]
+
+        for phase_name, phase_key, tensor_phase in phases_to_run:
+            with st.spinner(f"Running CP-ALS for {phase_name} with R={R_test}..."):
+                # Center and scale for numerical stability
+                tensor_mean = np.nanmean(tensor_phase)
+                tensor_std = np.nanstd(tensor_phase)
+                tensor_norm = (tensor_phase - tensor_mean) / (tensor_std + 1e-12)
+
+                A, B, C, D, lam, error = cpd_als_4d(tensor_norm, R_test, max_iter=max_iter, tol=1e-5, use_weighted=True, reg=1e-8)
+
+                # Reconstruct
+                I, J, K, L = tensor_norm.shape
+                recon = np.zeros_like(tensor_norm)
+                mask = ~np.isnan(tensor_norm)
+
+                for r in range(R_test):
+                    recon += lam[r] * np.outer(A[:, r], np.kron(np.kron(D[:, r], C[:, r]), B[:, r])).reshape(I, J, K, L)
+
+                # Error metrics
+                rel_error = np.sqrt(np.sum(mask * (tensor_norm - recon)**2) / np.sum(mask))
+                abs_error = rel_error * tensor_std
+
+                st.success(f"✅ CPD complete for {phase_key}! Relative error: {rel_error:.6f} | Absolute error: {abs_error:.2f} J/mol")
+
+                # SAVE TO SESSION STATE for AM analysis
+                st.session_state[f'cpd_completed_{phase_key}'] = True
+                st.session_state[f'A_{phase_key.lower()}'] = A
+                st.session_state[f'B_{phase_key.lower()}'] = B
+                st.session_state[f'C_{phase_key.lower()}'] = C
+                st.session_state[f'D_{phase_key.lower()}'] = D
+                st.session_state[f'lam_{phase_key.lower()}'] = lam
+                st.session_state[f'error_{phase_key.lower()}'] = error
+                st.session_state[f'rel_error_{phase_key.lower()}'] = rel_error
+                st.session_state[f'abs_error_{phase_key.lower()}'] = abs_error
+                st.session_state['tdt_metadata'] = {
+                    'co_vals': tdt_data['co_vals'],
+                    'cr_vals': tdt_data['cr_vals'],
+                    'fe_vals': tdt_data['fe_vals'],
+                    'T_vals': tdt_data['T_vals'],
+                    'dims': tdt_data['dims'],
+                    'co_step': tdt_data['co_step'],
+                    'cr_step': tdt_data['cr_step'],
+                    'fe_step': tdt_data['fe_step'],
+                    'T_step': tdt_data['T_step']
+                }
+
+        # Check if both phases are complete
+        liq_done = st.session_state.get('cpd_completed_LIQ', False)
+        fcc_done = st.session_state.get('cpd_completed_FCC', False)
+        if liq_done and fcc_done:
+            st.session_state['cpd_both_complete'] = True
+            st.balloons()
+            st.success("🎉 Both LIQUID and FCC phases decomposed! AM Design Assistant is now fully enabled.")
+        elif auto_both and len(phases_to_run) == 2:
+            st.success("🎉 Auto-run complete! Both phases saved.")
+        else:
+            missing = []
+            if not liq_done: missing.append("LIQUID")
+            if not fcc_done: missing.append("FCC")
+            st.info(f"⏳ Still need: {', '.join(missing)}. {'Toggle auto-run or ' if not auto_both else ''}select the other phase and run CPD again.")
+
+        # Display factor matrices for the LAST run phase
+        st.subheader("Factor Matrices")
+        tabs = st.tabs(["A (Co)", "B (Cr)", "C (Fe)", "D (T)", "lambda (Weights)"])
+
+        with tabs[0]:
+            df_A = pd.DataFrame(A, columns=[f"r={r+1}" for r in range(R_test)])
+            df_A.index = [f"Co={v:.3f}" for v in tdt_data['co_vals']]
+            st.dataframe(df_A.style.background_gradient(cmap='RdBu_r', axis=None), use_container_width=True)
+            st.caption("Each column = composition dependence of one CPD component")
+
+        with tabs[1]:
+            df_B = pd.DataFrame(B, columns=[f"r={r+1}" for r in range(R_test)])
+            df_B.index = [f"Cr={v:.3f}" for v in tdt_data['cr_vals']]
+            st.dataframe(df_B.style.background_gradient(cmap='RdBu_r', axis=None), use_container_width=True)
+
+        with tabs[2]:
+            df_C = pd.DataFrame(C, columns=[f"r={r+1}" for r in range(R_test)])
+            df_C.index = [f"Fe={v:.3f}" for v in tdt_data['fe_vals']]
+            st.dataframe(df_C.style.background_gradient(cmap='RdBu_r', axis=None), use_container_width=True)
+
+        with tabs[3]:
+            df_D = pd.DataFrame(D, columns=[f"r={r+1}" for r in range(R_test)])
+            df_D.index = [f"T={v}K" for v in tdt_data['T_vals']]
+            st.dataframe(df_D.style.background_gradient(cmap='RdBu_r', axis=None), use_container_width=True)
+            st.caption("Temperature factors: r=1≈constant, r=2≈linear in T, r=3≈curvature")
+
+        with tabs[4]:
+            df_lam = pd.DataFrame({'Component': [f"r={r+1}" for r in range(R_test)], 'Weight': lam})
+            st.dataframe(df_lam, use_container_width=True)
+
+            fig_weights = go.Figure(go.Bar(
+                x=[f"r={r+1}" for r in range(R_test)],
+                y=lam,
+                marker_color='teal'
             ))
-            
-            min_val = min(np.min(orig_valid), np.min(recon_valid))
-            max_val = max(np.max(orig_valid), np.max(recon_valid))
-            fig_scatter.add_trace(go.Scatter(
-                x=[min_val, max_val], y=[min_val, max_val],
-                mode='lines',
-                line=dict(color='red', dash='dash'),
-                name='Perfect fit (y=x)'
-            ))
-            
-            fig_scatter.update_layout(
-                title=f"Original vs Reconstructed G at T={T_slice}K",
-                xaxis_title="Original G (J/mol)",
-                yaxis_title="Reconstructed G (J/mol)",
-                template="plotly_white",
-                height=500
-            )
-            
-            st.plotly_chart(fig_scatter, use_container_width=True)
-    
-    # --- THEORY SECTION ---
+            fig_weights.update_layout(title="CPD Component Weights (lambda)", template="plotly_white")
+            st.plotly_chart(fig_weights, use_container_width=True)
+
+        # Reconstruction quality visualization
+        st.subheader("Reconstruction Quality")
+        T_slice = st.selectbox("Select Temperature Slice", tdt_data['T_vals'])
+        t_idx = tdt_data['T_vals'].index(T_slice)
+
+        orig_slice = tensor_sel[:,:,:,t_idx]
+        recon_slice = recon[:,:,:,t_idx] * tensor_std + tensor_mean
+
+        valid_mask_slice = ~np.isnan(orig_slice)
+        orig_valid = orig_slice[valid_mask_slice]
+        recon_valid = recon_slice[valid_mask_slice]
+
+        fig_scatter = go.Figure()
+        fig_scatter.add_trace(go.Scatter(
+            x=orig_valid, y=recon_valid,
+            mode='markers',
+            marker=dict(size=4, color='steelblue', opacity=0.5),
+            name='Data points'
+        ))
+
+        min_val = min(np.min(orig_valid), np.min(recon_valid))
+        max_val = max(np.max(orig_valid), np.max(recon_valid))
+        fig_scatter.add_trace(go.Scatter(
+            x=[min_val, max_val], y=[min_val, max_val],
+            mode='lines',
+            line=dict(color='red', dash='dash'),
+            name='Perfect fit (y=x)'
+        ))
+
+        fig_scatter.update_layout(
+            title=f"Original vs Reconstructed G at T={T_slice}K",
+            xaxis_title="Original G (J/mol)",
+            yaxis_title="Reconstructed G (J/mol)",
+            template="plotly_white",
+            height=500
+        )
+
+        st.plotly_chart(fig_scatter, use_container_width=True)
     with st.expander("📖 Tensor Decomposition Theory", expanded=False):
         st.markdown(r"""
         ### Canonical Polyadic Decomposition (CPD)
@@ -3239,61 +3327,113 @@ with tab_am:
     heat capacity, binary interactions, etc.).
     """)
 
-    # Check if CPD has been run
-    cpd_run = st.session_state.get('cpd_completed', False)
+    # Check CPD completion status
+    liq_done = st.session_state.get('cpd_completed_LIQ', False)
+    fcc_done = st.session_state.get('cpd_completed_FCC', False)
+    both_done = st.session_state.get('cpd_both_complete', False)
 
-    if not cpd_run:
-        st.info("""
-        💡 **To use AM analysis, first run CPD in the Tensor Decomposition tab.**
+    # Status indicator
+    status_col1, status_col2, status_col3 = st.columns(3)
+    with status_col1:
+        st.metric("LIQUID CPD", "✅ Complete" if liq_done else "⏳ Needed", 
+                 delta="Done" if liq_done else "Run in Tensor tab")
+    with status_col2:
+        st.metric("FCC CPD", "✅ Complete" if fcc_done else "⏳ Needed",
+                 delta="Done" if fcc_done else "Run in Tensor tab")
+    with status_col3:
+        st.metric("AM Ready", "✅ Yes" if both_done else "❌ No",
+                 delta="Both phases required" if not both_done else "Ready")
 
-        The AM tools use CPD factor matrices (A, B, C, D) and component weights (λ) 
-        to compute AM-specific metrics. Go to **📊 Tensor Decomposition (CPD)** → 
-        run **Rank Analysis** and **CPD Reconstruction**, then return here.
-        """)
+    st.divider()
 
-        # Option to use placeholder/demo data
-        use_demo = st.toggle("Use demo CPD factors for preview", value=False)
+    # Determine data source
+    if both_done:
+        st.success("✅ Both LIQUID and FCC CPD factors loaded from session state")
+
+        # Retrieve all factors from session state
+        A_liq = st.session_state['A_liq']
+        B_liq = st.session_state['B_liq']
+        C_liq = st.session_state['C_liq']
+        D_liq = st.session_state['D_liq']
+        lam_liq = st.session_state['lam_liq']
+
+        A_fcc = st.session_state['A_fcc']
+        B_fcc = st.session_state['B_fcc']
+        C_fcc = st.session_state['C_fcc']
+        D_fcc = st.session_state['D_fcc']
+        lam_fcc = st.session_state['lam_fcc']
+
+        meta = st.session_state['tdt_metadata']
+        co_vals_am = meta['co_vals']
+        cr_vals_am = meta['cr_vals']
+        fe_vals_am = meta['fe_vals']
+        T_vals_am = meta['T_vals']
+
+        use_real_data = True
+
+    elif liq_done or fcc_done:
+        st.warning("⚠️ Only one phase complete. AM analysis requires both LIQUID and FCC. Please run CPD for the missing phase in the Tensor Decomposition tab.")
+        use_demo = st.toggle("Use demo data for preview", value=False)
         if not use_demo:
             st.stop()
+        use_real_data = False
+    else:
+        st.info("💡 **To use AM analysis, run CPD for both phases in the Tensor Decomposition tab.**")
+        use_demo = st.toggle("Use demo CPD factors for preview", value=True)
+        if not use_demo:
+            st.stop()
+        use_real_data = False
+
+    # Demo data generation (used when real CPD not available)
+    if not use_real_data:
+        st.warning("⚠️ Using synthetic demo factors. Results are illustrative only.")
+
+        # Use actual grid dimensions from tensor data if available
+        if 'tdt_metadata' in st.session_state:
+            meta = st.session_state['tdt_metadata']
+            co_vals_demo = np.array(meta['co_vals'])
+            cr_vals_demo = np.array(meta['cr_vals'])
+            fe_vals_demo = np.array(meta['fe_vals'])
+            T_vals_demo = np.array(meta['T_vals'])
+            n_co, n_cr, n_fe, n_T = meta['dims']
         else:
-            st.warning("⚠️ Using synthetic demo factors. Results are illustrative only.")
-            # Generate synthetic factors for demo
+            # Fallback defaults
             n_co, n_cr, n_fe, n_T = 20, 20, 20, 31
             co_vals_demo = np.linspace(0, 0.4, n_co)
             cr_vals_demo = np.linspace(0, 0.4, n_cr)
             fe_vals_demo = np.linspace(0, 0.4, n_fe)
-            T_vals_demo = np.array(T_list)
+            T_vals_demo = np.array(T_list) if 'T_list' in dir() else np.arange(700, 3701, 100)
 
-            R_demo = 6
-            A_liq = np.random.randn(n_co, R_demo) * 0.1
-            A_fcc = np.random.randn(n_co, R_demo) * 0.1
-            B_liq = np.random.randn(n_cr, R_demo) * 0.1
-            B_fcc = np.random.randn(n_cr, R_demo) * 0.1
-            C_liq = np.random.randn(n_fe, R_demo) * 0.1
-            C_fcc = np.random.randn(n_fe, R_demo) * 0.1
-            D_liq = np.random.randn(n_T, R_demo) * 0.1
-            D_fcc = np.random.randn(n_T, R_demo) * 0.1
-            lam_liq = np.array([1.0, 0.8, 0.5, 0.3, 0.2, 0.1])
-            lam_fcc = np.array([1.0, 0.7, 0.6, 0.3, 0.2, 0.1])
+        R_demo = 6
+        np.random.seed(42)  # Reproducible demo
 
-            # Make D factors physically plausible
-            T_norm = (T_vals_demo - np.mean(T_vals_demo)) / np.std(T_vals_demo)
-            D_liq[:, 0] = 1.0  # Constant
-            D_liq[:, 1] = T_norm  # Linear entropy
-            D_liq[:, 2] = T_norm**2  # Cp curvature
-            D_fcc[:, 0] = 1.0
-            D_fcc[:, 1] = T_norm * 0.9
-            D_fcc[:, 2] = T_norm**2 * 1.1
-    else:
-        # Use actual CPD results from session state
-        # These would be stored by the CPD tab
-        st.success("✅ Using CPD factor matrices from Tensor Decomposition tab")
-        # Placeholder - actual implementation would retrieve from session state
-        A_liq = st.session_state.get('A_liq', None)
-        # ... etc
-        if A_liq is None:
-            st.error("❌ CPD factors not found in session state. Please re-run CPD.")
-            st.stop()
+        A_liq = np.random.randn(n_co, R_demo) * 0.1
+        A_fcc = np.random.randn(n_co, R_demo) * 0.1
+        B_liq = np.random.randn(n_cr, R_demo) * 0.1
+        B_fcc = np.random.randn(n_cr, R_demo) * 0.1
+        C_liq = np.random.randn(n_fe, R_demo) * 0.1
+        C_fcc = np.random.randn(n_fe, R_demo) * 0.1
+        D_liq = np.random.randn(n_T, R_demo) * 0.1
+        D_fcc = np.random.randn(n_T, R_demo) * 0.1
+        lam_liq = np.array([1.0, 0.8, 0.5, 0.3, 0.2, 0.1])
+        lam_fcc = np.array([1.0, 0.7, 0.6, 0.3, 0.2, 0.1])
+
+        # Make D factors physically plausible
+        if len(T_vals_demo) > 1:
+            T_norm = (T_vals_demo - np.mean(T_vals_demo)) / (np.std(T_vals_demo) + 1e-12)
+        else:
+            T_norm = np.zeros_like(T_vals_demo)
+        D_liq[:, 0] = 1.0
+        D_liq[:, 1] = T_norm
+        D_liq[:, 2] = T_norm**2
+        D_fcc[:, 0] = 1.0
+        D_fcc[:, 1] = T_norm * 0.9
+        D_fcc[:, 2] = T_norm**2 * 1.1
+
+        co_vals_am = co_vals_demo
+        cr_vals_am = cr_vals_demo
+        fe_vals_am = fe_vals_demo
+        T_vals_am = T_vals_demo
 
     # AM Analysis Sub-tabs
     am_subtab = st.radio("AM Analysis", 
@@ -3302,34 +3442,21 @@ with tab_am:
                         horizontal=True)
 
     if am_subtab == "🔥 Transition Temperature":
-        if use_demo:
-            render_am_transition_surface_tab(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
-                                              D_liq, D_fcc, lam_liq, lam_fcc,
-                                              co_vals_demo, cr_vals_demo, fe_vals_demo, T_vals_demo)
-        else:
-            st.info("Run CPD first to use actual factor matrices.")
+        render_am_transition_surface_tab(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                                          D_liq, D_fcc, lam_liq, lam_fcc,
+                                          co_vals_am, cr_vals_am, fe_vals_am, T_vals_am)
 
     elif am_subtab == "🌡️ Thermal Response":
-        if use_demo:
-            render_am_temperature_factors_tab(D_liq, D_fcc, T_vals_demo, lam_liq, lam_fcc)
-        else:
-            st.info("Run CPD first to use actual factor matrices.")
+        render_am_temperature_factors_tab(D_liq, D_fcc, T_vals_am, lam_liq, lam_fcc)
 
     elif am_subtab == "🎯 Composition Sensitivity":
-        if use_demo:
-            render_am_sensitivity_tab(A_liq, B_liq, C_liq, lam_liq,
-                                      co_vals_demo, cr_vals_demo, fe_vals_demo)
-        else:
-            st.info("Run CPD first to use actual factor matrices.")
+        render_am_sensitivity_tab(A_liq, B_liq, C_liq, lam_liq,
+                                  co_vals_am, cr_vals_am, fe_vals_am)
 
     elif am_subtab == "⚠️ Defect Susceptibility":
-        if use_demo:
-            render_am_defect_tab(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
-                                D_liq, D_fcc, lam_liq, lam_fcc,
-                                co_vals_demo, cr_vals_demo, fe_vals_demo, T_vals_demo)
-        else:
-            st.info("Run CPD first to use actual factor matrices.")
-
+        render_am_defect_tab(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                            D_liq, D_fcc, lam_liq, lam_fcc,
+                            co_vals_am, cr_vals_am, fe_vals_am, T_vals_am)
 
 # =============================================
 # EXPORT & FOOTER
