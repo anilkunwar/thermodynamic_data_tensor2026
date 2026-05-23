@@ -1043,6 +1043,9 @@ def _extract_transition_impl(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
     """
     Extract T*(x_Co, x_Cr, x_Fe) surface where G_LIQ = G_FCC using CPD factors.
 
+    CRITICAL FIX: Validates that LIQUID and FCC factors have compatible ranks.
+    If ranks differ, uses the minimum rank to prevent IndexError.
+
     Theory: For each composition, solve ΔG(T*) = 0 via root-finding on the 
     temperature factor combination:
 
@@ -1066,10 +1069,26 @@ def _extract_transition_impl(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
     """
     from scipy.optimize import brentq
 
-    R = len(lam_liq)
+    # === RANK VALIDATION ===
+    R_liq = len(lam_liq)
+    R_fcc = len(lam_fcc)
+    R = min(R_liq, R_fcc)  # Use minimum rank to prevent IndexError
+
+    # Validate D matrix dimensions
+    if D_liq.shape[1] < R_liq or D_fcc.shape[1] < R_fcc:
+        st.warning(f"⚠️ D matrix columns ({D_liq.shape[1]}, {D_fcc.shape[1]}) < rank ({R_liq}, {R_fcc}). Truncating to min rank {R}.")
+        R = min(R, D_liq.shape[1], D_fcc.shape[1])
+
+    if R < 1:
+        st.error("❌ Cannot extract transition surface: CPD rank < 1")
+        return None, None, None
+
+    if R < R_liq or R < R_fcc:
+        st.info(f"ℹ️ Using truncated rank R={R} (LIQUID had {R_liq}, FCC had {R_fcc})")
+
     n_T = len(T_vals)
 
-    # Pre-compute temperature-dependent difference: D_diff[T, r] = lam_liq[r]*D_liq[:,r] - lam_fcc[r]*D_fcc[:,r]
+    # Pre-compute temperature-dependent difference using VALIDATED rank R
     D_diff = np.zeros((n_T, R))
     for r in range(R):
         D_diff[:, r] = lam_liq[r] * D_liq[:, r] - lam_fcc[r] * D_fcc[:, r]
@@ -1114,9 +1133,9 @@ def _extract_transition_impl(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
                 if np.any(np.isnan(A_fcc_q)) or np.any(np.isnan(B_fcc_q)) or np.any(np.isnan(C_fcc_q)):
                     continue
 
-                # Compute composition-dependent coefficient: comp_coeff[r]
-                comp_coeff = (lam_liq * A_liq_q * B_liq_q * C_liq_q - 
-                             lam_fcc * A_fcc_q * B_fcc_q * C_fcc_q)
+                # Use VALIDATED rank R (not full rank)
+                comp_coeff = (lam_liq[:R] * A_liq_q[:R] * B_liq_q[:R] * C_liq_q[:R] - 
+                             lam_fcc[:R] * A_fcc_q[:R] * B_fcc_q[:R] * C_fcc_q[:R])
 
                 # Define ΔG(T) function for root finding
                 def delta_G(T_query):
@@ -1714,10 +1733,80 @@ def plot_segregation_heatmap(seg_matrix, x_vals, y_vals, x_label, y_label, title
 # STREAMLIT UI COMPONENTS FOR AM ANALYSIS
 # =============================================
 
+
+
+def validate_cpd_session_state():
+    """
+    Validate that CPD factors in session state have compatible dimensions.
+    Returns (is_valid, error_message, adjusted_factors)
+    """
+    required_keys = ['A_liq', 'B_liq', 'C_liq', 'D_liq', 'lam_liq',
+                     'A_fcc', 'B_fcc', 'C_fcc', 'D_fcc', 'lam_fcc']
+
+    for key in required_keys:
+        if key not in st.session_state:
+            return False, f"Missing session state key: {key}", None
+
+    A_liq = st.session_state['A_liq']
+    A_fcc = st.session_state['A_fcc']
+    B_liq = st.session_state['B_liq']
+    B_fcc = st.session_state['B_fcc']
+    C_liq = st.session_state['C_liq']
+    C_fcc = st.session_state['C_fcc']
+    D_liq = st.session_state['D_liq']
+    D_fcc = st.session_state['D_fcc']
+    lam_liq = st.session_state['lam_liq']
+    lam_fcc = st.session_state['lam_fcc']
+
+    # Check dimensions
+    R_liq = len(lam_liq)
+    R_fcc = len(lam_fcc)
+
+    checks = [
+        (A_liq.shape[1] == R_liq, f"A_liq cols ({A_liq.shape[1]}) != rank ({R_liq})"),
+        (B_liq.shape[1] == R_liq, f"B_liq cols ({B_liq.shape[1]}) != rank ({R_liq})"),
+        (C_liq.shape[1] == R_liq, f"C_liq cols ({C_liq.shape[1]}) != rank ({R_liq})"),
+        (D_liq.shape[1] == R_liq, f"D_liq cols ({D_liq.shape[1]}) != rank ({R_liq})"),
+        (A_fcc.shape[1] == R_fcc, f"A_fcc cols ({A_fcc.shape[1]}) != rank ({R_fcc})"),
+        (B_fcc.shape[1] == R_fcc, f"B_fcc cols ({B_fcc.shape[1]}) != rank ({R_fcc})"),
+        (C_fcc.shape[1] == R_fcc, f"C_fcc cols ({C_fcc.shape[1]}) != rank ({R_fcc})"),
+        (D_fcc.shape[1] == R_fcc, f"D_fcc cols ({D_fcc.shape[1]}) != rank ({R_fcc})"),
+    ]
+
+    for check, msg in checks:
+        if not check:
+            return False, f"Dimension mismatch: {msg}", None
+
+    # Check grid metadata
+    if 'tdt_metadata' not in st.session_state:
+        return False, "Missing tdt_metadata in session state", None
+
+    meta = st.session_state['tdt_metadata']
+    required_meta = ['co_vals', 'cr_vals', 'fe_vals', 'T_vals']
+    for key in required_meta:
+        if key not in meta:
+            return False, f"Missing metadata key: {key}", None
+
+    return True, "Valid", {
+        'A_liq': A_liq, 'B_liq': B_liq, 'C_liq': C_liq, 'D_liq': D_liq, 'lam_liq': lam_liq,
+        'A_fcc': A_fcc, 'B_fcc': B_fcc, 'C_fcc': C_fcc, 'D_fcc': D_fcc, 'lam_fcc': lam_fcc,
+        'co_vals': meta['co_vals'], 'cr_vals': meta['cr_vals'], 
+        'fe_vals': meta['fe_vals'], 'T_vals': meta['T_vals']
+    }
+
 def render_am_transition_surface_tab(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
                                       D_liq, D_fcc, lam_liq, lam_fcc,
                                       co_vals, cr_vals, fe_vals, T_vals):
     """Render Streamlit UI for transition temperature surface analysis."""
+
+    # Validate dimensions first
+    R_liq = len(lam_liq)
+    R_fcc = len(lam_fcc)
+    R = min(R_liq, R_fcc, D_liq.shape[1], D_fcc.shape[1])
+
+    if R < min(R_liq, R_fcc):
+        st.warning(f"⚠️ Rank mismatch detected: LIQUID rank={R_liq}, FCC rank={R_fcc}. Using truncated rank R={R}.")
+
     st.subheader("🔥 Phase Transition Temperature Surface T*(x)")
     st.markdown(r"""
     **Physical meaning**: Temperature where $G_{LIQ} = G_{FCC}$ (melting/solidification point).  
@@ -1735,12 +1824,21 @@ def render_am_transition_surface_tab(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
 
     if st.button("🔬 Compute T* Surface", use_container_width=True, type="primary"):
         with st.spinner(f"Solving for transition temperatures on {resolution}³ grid..."):
-            T_melt, valid_mask, delta_G_grid = extract_transition_surface_from_cpd(
-                A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
-                D_liq, D_fcc, lam_liq, lam_fcc,
-                co_vals, cr_vals, fe_vals, T_vals,
-                composition_grid_resolution=resolution
-            )
+            try:
+                T_melt, valid_mask, delta_G_grid = extract_transition_surface_from_cpd(
+                    A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                    D_liq, D_fcc, lam_liq, lam_fcc,
+                    co_vals, cr_vals, fe_vals, T_vals,
+                    composition_grid_resolution=resolution
+                )
+            except Exception as e:
+                st.error(f"❌ Error computing transition surface: {str(e)}")
+                st.info("💡 Try re-running CPD with consistent rank for both phases.")
+                return
+
+            if T_melt is None:
+                st.error("❌ Failed to compute transition surface. Check CPD factor dimensions.")
+                return
 
             valid_count = np.sum(valid_mask & ~np.isnan(T_melt))
             if valid_count < 10:
@@ -3316,6 +3414,691 @@ with tab_tensor:
         """)
 
 
+
+
+# =============================================
+# APPLICATION 6: MULTI-MATERIAL / GRADED STRUCTURES DESIGN
+# =============================================
+
+def evaluate_composition_path(path_func, s_vals, T_vals_query, 
+                               A_liq, B_liq, C_liq, D_liq, lam_liq,
+                               A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
+                               co_vals, cr_vals, fe_vals, T_vals_grid):
+    """
+    Evaluate Gibbs energy along a parametric composition path.
+
+    A composition path is a function x(s) = (x_Co(s), x_Cr(s), x_Fe(s)) 
+    for s ∈ [0,1], with x_Ni(s) = 1 - x_Co(s) - x_Cr(s) - x_Fe(s).
+
+    This enables design of graded structures where composition varies
+    smoothly from alloy A (s=0) to alloy B (s=1).
+    """
+    from scipy.interpolate import interp1d
+
+    # Rank validation (same fix as above)
+    R_liq = len(lam_liq)
+    R_fcc = len(lam_fcc)
+    R = min(R_liq, R_fcc, D_liq.shape[1], D_fcc.shape[1])
+
+    n_s = len(s_vals)
+    n_T = len(T_vals_query)
+
+    # Pre-build interpolation functions for factor matrices
+    def build_factor_interp(vals, factor_matrix):
+        """Build interpolation functions for each CPD rank."""
+        interps = []
+        for r in range(factor_matrix.shape[1]):
+            interps.append(interp1d(vals, factor_matrix[:, r], 
+                                     kind='cubic', fill_value='extrapolate'))
+        return interps
+
+    A_liq_interp = build_factor_interp(co_vals, A_liq)
+    B_liq_interp = build_factor_interp(cr_vals, B_liq)
+    C_liq_interp = build_factor_interp(fe_vals, C_liq)
+    A_fcc_interp = build_factor_interp(co_vals, A_fcc)
+    B_fcc_interp = build_factor_interp(cr_vals, B_fcc)
+    C_fcc_interp = build_factor_interp(fe_vals, C_fcc)
+
+    # Temperature factor interpolation
+    D_liq_interp = [interp1d(T_vals_grid, D_liq[:, r], kind='cubic',
+                              fill_value='extrapolate') for r in range(R_liq)]
+    D_fcc_interp = [interp1d(T_vals_grid, D_fcc[:, r], kind='cubic',
+                              fill_value='extrapolate') for r in range(R_fcc)]
+
+    # Evaluate path
+    path_pts = np.array([path_func(s) for s in s_vals])  # (n_s, 3)
+
+    # Storage
+    G_liq_path = np.zeros((n_s, n_T))
+    G_fcc_path = np.zeros((n_s, n_T))
+    dG_path = np.zeros((n_s, n_T))
+    T_star_path = np.full(n_s, np.nan)
+    phase_path = np.full((n_s, n_T), '', dtype=object)
+
+    # Evaluate at each path point
+    for i, (co, cr, fe) in enumerate(path_pts):
+        # Check simplex validity
+        ni = 1.0 - co - cr - fe
+        if ni < -0.01 or co < -0.01 or cr < -0.01 or fe < -0.01:
+            continue  # Outside valid composition space
+
+        # Interpolate composition factors
+        A_liq_q = np.array([f(co) for f in A_liq_interp])
+        B_liq_q = np.array([f(cr) for f in B_liq_interp])
+        C_liq_q = np.array([f(fe) for f in C_liq_interp])
+        A_fcc_q = np.array([f(co) for f in A_fcc_interp])
+        B_fcc_q = np.array([f(cr) for f in B_fcc_interp])
+        C_fcc_q = np.array([f(fe) for f in C_fcc_interp])
+
+        # Evaluate at each temperature
+        for t_idx, T in enumerate(T_vals_query):
+            # LIQUID Gibbs energy
+            D_liq_T = np.array([f(T) for f in D_liq_interp])
+            G_liq_path[i, t_idx] = np.sum(lam_liq * A_liq_q * B_liq_q * C_liq_q * D_liq_T)
+
+            # FCC Gibbs energy
+            D_fcc_T = np.array([f(T) for f in D_fcc_interp])
+            G_fcc_path[i, t_idx] = np.sum(lam_fcc * A_fcc_q * B_fcc_q * C_fcc_q * D_fcc_T)
+
+            # Driving force and phase
+            dG_path[i, t_idx] = G_liq_path[i, t_idx] - G_fcc_path[i, t_idx]
+            phase_path[i, t_idx] = 'LIQUID' if dG_path[i, t_idx] <= 0 else 'FCC'
+
+        # Find T* where dG=0 (transition temperature)
+        if np.any(dG_path[i, :] > 0) and np.any(dG_path[i, :] < 0):
+            from scipy.optimize import brentq
+            try:
+                dG_interp = interp1d(T_vals_query, dG_path[i, :], kind='cubic')
+                pos_mask = dG_path[i, :] > 0
+                neg_mask = dG_path[i, :] < 0
+                if np.any(pos_mask) and np.any(neg_mask):
+                    T_low = T_vals_query[neg_mask][0] if np.any(neg_mask) else T_vals_query[0]
+                    T_high = T_vals_query[pos_mask][-1] if np.any(pos_mask) else T_vals_query[-1]
+                    if dG_interp(T_low) > 0:
+                        T_low, T_high = T_high, T_low
+                    T_star_path[i] = brentq(dG_interp, T_low, T_high, xtol=1.0)
+            except (ValueError, RuntimeError):
+                pass
+
+    # Compute gradient of T* along path
+    grad_T_star = np.gradient(T_star_path, s_vals) if len(s_vals) > 1 else np.zeros(n_s)
+
+    # Segregation risk: high when binary interaction factors (r=4,5) are strong
+    seg_risk = np.zeros(n_s)
+    for i, (co, cr, fe) in enumerate(path_pts):
+        if np.isnan(T_star_path[i]):
+            continue
+        binary_r = [3, 4, 5] if R_liq >= 6 else list(range(min(3, R_liq)))
+        seg_strength = 0
+        for r in binary_r:
+            if r < R_liq and r < len(A_liq_interp):
+                seg_strength += abs(lam_liq[r] * A_liq_interp[r](co) * 
+                                   B_liq_interp[r](cr) * C_liq_interp[r](fe))
+        seg_risk[i] = seg_strength * abs(grad_T_star[i]) if not np.isnan(grad_T_star[i]) else 0
+
+    # Normalize segregation risk
+    if np.max(seg_risk) > np.min(seg_risk):
+        seg_risk = (seg_risk - np.min(seg_risk)) / (np.max(seg_risk) - np.min(seg_risk))
+
+    return {
+        'G_liq': G_liq_path,
+        'G_fcc': G_fcc_path,
+        'dG': dG_path,
+        'T_star': T_star_path,
+        'phase': phase_path,
+        'grad_T_star': grad_T_star,
+        'segregation_risk': seg_risk,
+        'path_pts': path_pts,
+        's_vals': s_vals,
+        'T_vals': T_vals_query
+    }
+
+
+def design_optimal_gradient(start_comp, end_comp, n_points=50, 
+                            penalty_weight=1.0, curvature_weight=0.5,
+                            A_liq=None, B_liq=None, C_liq=None, D_liq=None, lam_liq=None,
+                            A_fcc=None, B_fcc=None, C_fcc=None, D_fcc=None, lam_fcc=None,
+                            co_vals=None, cr_vals=None, fe_vals=None, T_vals=None,
+                            T_process=2800):
+    """
+    Design an optimal composition gradient path between two alloys.
+
+    The "optimal" path minimizes:
+        1. T* variation along the path (prevents interfacial cracking)
+        2. Curvature of the path (prevents sharp composition changes)
+        3. Segregation potential in the mushy zone
+    """
+    from scipy.interpolate import CubicSpline
+    from scipy.optimize import minimize
+
+    s_vals = np.linspace(0, 1, n_points)
+
+    def path_from_params(params):
+        """Build cubic spline path from optimization parameters."""
+        p1 = np.array([params[0], params[1], params[2]])  # s=1/3
+        p2 = np.array([params[3], params[4], params[5]])  # s=2/3
+
+        # Ensure simplex constraint: Co+Cr+Fe <= 1
+        for p in [p1, p2]:
+            if np.sum(p) > 1.0:
+                p[:] = p / np.sum(p) * 0.99
+
+        # Build cubic spline through: start -> p1 -> p2 -> end
+        control_pts = np.vstack([start_comp, p1, p2, end_comp])
+        s_control = np.array([0, 1/3, 2/3, 1])
+
+        cs_co = CubicSpline(s_control, control_pts[:, 0])
+        cs_cr = CubicSpline(s_control, control_pts[:, 1])
+        cs_fe = CubicSpline(s_control, control_pts[:, 2])
+
+        path = np.column_stack([cs_co(s_vals), cs_cr(s_vals), cs_fe(s_vals)])
+
+        # Enforce simplex constraint along path
+        for i in range(len(path)):
+            if np.sum(path[i, :3]) > 1.0:
+                path[i, :3] = path[i, :3] / np.sum(path[i, :3]) * 0.99
+
+        return path
+
+    def objective(params):
+        """Cost function to minimize."""
+        path = path_from_params(params)
+
+        # Evaluate T* along path at process temperature
+        path_results = evaluate_composition_path(
+            lambda s: path[int(s * (n_points - 1))] if int(s * (n_points - 1)) < n_points else path[-1],
+            s_vals, [T_process],
+            A_liq, B_liq, C_liq, D_liq, lam_liq,
+            A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
+            co_vals, cr_vals, fe_vals, T_vals
+        )
+
+        T_star = path_results['T_star']
+
+        # Penalty 1: T* variation (want smooth, minimal changes)
+        tstar_variation = np.nanvar(T_star)
+
+        # Penalty 2: Path curvature (want smooth geometric path)
+        curvature = 0
+        for dim in range(3):
+            second_deriv = np.gradient(np.gradient(path[:, dim], s_vals), s_vals)
+            curvature += np.mean(second_deriv**2)
+
+        # Penalty 3: Segregation risk
+        seg_risk = np.nanmean(path_results['segregation_risk'])
+
+        # Total cost
+        cost = (penalty_weight * tstar_variation + 
+                curvature_weight * curvature + 
+                0.3 * seg_risk)
+
+        return cost
+
+    # Initial guess: linear interpolation control points
+    p1_init = start_comp + (end_comp - start_comp) / 3
+    p2_init = start_comp + 2 * (end_comp - start_comp) / 3
+    x0 = np.concatenate([p1_init, p2_init])
+
+    # Bounds: compositions must stay in [0, 1]
+    bounds = [(0, 1)] * 6
+
+    # Optimize
+    result = minimize(objective, x0, method='L-BFGS-B', bounds=bounds,
+                     options={'maxiter': 100, 'disp': False})
+
+    optimal_path = path_from_params(result.x)
+
+    # Evaluate final path metrics
+    final_results = evaluate_composition_path(
+        lambda s: optimal_path[int(s * (n_points - 1))],
+        s_vals, T_vals,
+        A_liq, B_liq, C_liq, D_liq, lam_liq,
+        A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
+        co_vals, cr_vals, fe_vals, T_vals
+    )
+
+    metrics = {
+        'T_star_range': np.nanmax(final_results['T_star']) - np.nanmin(final_results['T_star']),
+        'T_star_std': np.nanstd(final_results['T_star']),
+        'max_segregation_risk': np.nanmax(final_results['segregation_risk']),
+        'mean_segregation_risk': np.nanmean(final_results['segregation_risk']),
+        'path_length': np.sum(np.linalg.norm(np.diff(optimal_path, axis=0), axis=1)),
+        'linear_path_length': np.linalg.norm(end_comp - start_comp)
+    }
+
+    return {
+        'path': optimal_path,
+        's_vals': s_vals,
+        'cost_history': [result.fun],
+        'metrics': metrics,
+        'T_star': final_results['T_star'],
+        'segregation_risk': final_results['segregation_risk'],
+        'phase_at_T': final_results['phase']
+    }
+
+
+def check_gradient_feasibility(path_pts, T_vals_query, A_liq, B_liq, C_liq, D_liq, lam_liq,
+                                A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
+                                co_vals, cr_vals, fe_vals, T_vals_grid,
+                                T_melt_pool=2800, T_solidus=1600, T_haz=1200):
+    """Check if a composition gradient is feasible for AM processing."""
+    results = evaluate_composition_path(
+        lambda s: path_pts[int(s * (len(path_pts) - 1))] if int(s * (len(path_pts) - 1)) < len(path_pts) else path_pts[-1],
+        np.linspace(0, 1, len(path_pts)), T_vals_query,
+        A_liq, B_liq, C_liq, D_liq, lam_liq,
+        A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
+        co_vals, cr_vals, fe_vals, T_vals_grid
+    )
+
+    issues = []
+    safety_score = 1.0
+    T_star = results['T_star']
+
+    # Criterion 1: Meltability
+    if np.any(T_star > T_melt_pool):
+        issues.append(f"❌ Some compositions have T* > melt pool T ({T_melt_pool}K) — cannot fully melt")
+        safety_score -= 0.3
+
+    # Criterion 2: T* gradient smoothness
+    grad_T = np.gradient(T_star)
+    max_grad = np.nanmax(np.abs(grad_T))
+    if max_grad > 200:  # K per unit path length
+        issues.append(f"⚠️ Steep T* gradient (max {max_grad:.1f} K/path unit) — risk of interfacial cracking")
+        safety_score -= 0.2
+
+    # Criterion 3: Phase consistency in mushy zone
+    solidus_idx = np.argmin(np.abs(np.array(T_vals_query) - T_solidus))
+    phases_solidus = results['phase'][:, solidus_idx]
+    if len(set(phases_solidus)) > 1:
+        issues.append("⚠️ Phase changes in mushy zone — risk of mixed microstructure")
+        safety_score -= 0.2
+
+    # Criterion 4: HAZ stability
+    haz_idx = np.argmin(np.abs(np.array(T_vals_query) - T_haz))
+    phases_haz = results['phase'][:, haz_idx]
+    if np.any(phases_haz == 'LIQUID'):
+        issues.append("⚠️ Some compositions partially melt in HAZ — risk of liquation cracking")
+        safety_score -= 0.2
+
+    # Criterion 5: Segregation risk
+    if np.nanmax(results['segregation_risk']) > 0.7:
+        issues.append("⚠️ High segregation risk in gradient zone")
+        safety_score -= 0.1
+
+    return {
+        'feasible': len([i for i in issues if i.startswith('❌')]) == 0,
+        'issues': issues,
+        'safety_score': max(0, safety_score),
+        'metrics': {
+            'T_star_min': np.nanmin(T_star),
+            'T_star_max': np.nanmax(T_star),
+            'T_star_range': np.nanmax(T_star) - np.nanmin(T_star),
+            'max_T_gradient': max_grad,
+            'segregation_max': np.nanmax(results['segregation_risk'])
+        }
+    }
+
+
+def plot_gradient_path_3d(path_pts, T_star, s_vals, 
+                          start_label="Alloy A", end_label="Alloy B",
+                          color_by='T_star'):
+    """Plot composition gradient path in 3D composition space."""
+    fig = go.Figure()
+
+    # Main path line
+    fig.add_trace(go.Scatter3d(
+        x=path_pts[:, 0], y=path_pts[:, 1], z=path_pts[:, 2],
+        mode='lines+markers',
+        line=dict(color='royalblue', width=6),
+        marker=dict(
+            size=8,
+            color=T_star,
+            colorscale='Magma',
+            cmin=np.nanmin(T_star), cmax=np.nanmax(T_star),
+            colorbar=dict(title="T* (K)", thickness=15, len=0.7),
+            showscale=True
+        ),
+        name='Gradient Path',
+        hovertemplate=("s=%{customdata:.3f}<br>" +
+                      "Co=%{x:.3f}<br>Cr=%{y:.3f}<br>Fe=%{z:.3f}<br>" +
+                      "T*=%{marker.color:.0f} K<extra></extra>"),
+        customdata=s_vals
+    ))
+
+    # Start and end markers
+    fig.add_trace(go.Scatter3d(
+        x=[path_pts[0, 0]], y=[path_pts[0, 1]], z=[path_pts[0, 2]],
+        mode='markers+text',
+        marker=dict(size=15, color='green', symbol='diamond',
+                   line=dict(width=2, color='white')),
+        text=[start_label],
+        textposition='top center',
+        textfont=dict(size=14, color='green'),
+        name=start_label,
+        hovertemplate=f"<b>{start_label}</b><br>Co=%{{x:.3f}}<br>Cr=%{{y:.3f}}<br>Fe=%{{z:.3f}}<extra></extra>"
+    ))
+
+    fig.add_trace(go.Scatter3d(
+        x=[path_pts[-1, 0]], y=[path_pts[-1, 1]], z=[path_pts[-1, 2]],
+        mode='markers+text',
+        marker=dict(size=15, color='red', symbol='diamond',
+                   line=dict(width=2, color='white')),
+        text=[end_label],
+        textposition='top center',
+        textfont=dict(size=14, color='red'),
+        name=end_label,
+        hovertemplate=f"<b>{end_label}</b><br>Co=%{{x:.3f}}<br>Cr=%{{y:.3f}}<br>Fe=%{{z:.3f}}<extra></extra>"
+    ))
+
+    # Simplex frame for reference
+    edges = [
+        [(1,0,0),(0,1,0)], [(1,0,0),(0,0,1)], [(1,0,0),(0,0,0)],
+        [(0,1,0),(0,0,1)], [(0,1,0),(0,0,0)], [(0,0,1),(0,0,0)]
+    ]
+    for e in edges:
+        fig.add_trace(go.Scatter3d(
+            x=[e[0][0], e[1][0]], y=[e[0][1], e[1][1]], z=[e[0][2], e[1][2]],
+            mode="lines", line=dict(color="gray", width=2, dash='dot'),
+            hoverinfo="skip", showlegend=False
+        ))
+
+    vertices = [(1,0,0,"Co"), (0,1,0,"Cr"), (0,0,1,"Fe"), (0,0,0,"Ni")]
+    for vx, vy, vz, vl in vertices:
+        fig.add_trace(go.Scatter3d(
+            x=[vx], y=[vy], z=[vz], mode="text", text=[vl],
+            textposition="top center", textfont=dict(size=12, color="gray"),
+            hoverinfo="skip", showlegend=False
+        ))
+
+    fig.update_layout(
+        title=dict(text="Optimal Composition Gradient Path", font_size=16),
+        scene=dict(
+            xaxis=dict(title="x<sub>Co</sub>", range=[0, 1]),
+            yaxis=dict(title="x<sub>Cr</sub>", range=[0, 1]),
+            zaxis=dict(title="x<sub>Fe</sub>", range=[0, 1]),
+            aspectmode='cube'
+        ),
+        height=650,
+        margin=dict(l=0, r=0, b=0, t=50),
+        legend=dict(
+            yanchor="top", y=0.99, xanchor="left", x=0.01,
+            bgcolor="rgba(255,255,255,0.8)"
+        )
+    )
+
+    return fig
+
+
+def plot_gradient_analysis_dashboard(path_results, T_vals_query, s_vals):
+    """Create a comprehensive dashboard for gradient analysis."""
+    from plotly.subplots import make_subplots
+
+    fig = make_subplots(
+        rows=2, cols=2,
+        subplot_titles=('T* along Gradient Path', 'Phase Stability Map (s vs T)',
+                       'Segregation Risk', 'Driving Force ΔG at Process T'),
+        specs=[[{}, {}], [{}, {}]],
+        vertical_spacing=0.12,
+        horizontal_spacing=0.1
+    )
+
+    # 1. T* along path
+    fig.add_trace(go.Scatter(
+        x=s_vals, y=path_results['T_star'],
+        mode='lines+markers',
+        line=dict(color='firebrick', width=3),
+        marker=dict(size=6),
+        name='T*(s)',
+        hovertemplate="s=%{x:.3f}<br>T*=%{y:.0f} K<extra></extra>"
+    ), row=1, col=1)
+
+    # Add melt pool and HAZ reference lines
+    fig.add_hline(y=2800, line_dash="dash", line_color="red", opacity=0.5,
+                 annotation_text="Melt Pool", row=1, col=1)
+    fig.add_hline(y=1200, line_dash="dash", line_color="orange", opacity=0.5,
+                 annotation_text="HAZ", row=1, col=1)
+
+    # 2. Phase stability map
+    phase_numeric = np.where(path_results['phase'] == 'LIQUID', 1, 0)
+    fig.add_trace(go.Heatmap(
+        z=phase_numeric,
+        x=T_vals_query,
+        y=s_vals,
+        colorscale=[[0, '#2980b9'], [1, '#e74c3c']],  # Blue=FCC, Red=LIQUID
+        showscale=True,
+        colorbar=dict(title="Phase", tickvals=[0, 1], ticktext=['FCC', 'LIQUID'],
+                     len=0.4, y=0.8),
+        hovertemplate="T=%{x:.0f}K<br>s=%{y:.3f}<br>Phase=%{z}<extra></extra>"
+    ), row=1, col=2)
+
+    # 3. Segregation risk
+    fig.add_trace(go.Scatter(
+        x=s_vals, y=path_results['segregation_risk'],
+        mode='lines',
+        line=dict(color='darkred', width=3),
+        fill='tozeroy',
+        fillcolor='rgba(220, 20, 60, 0.2)',
+        name='Segregation Risk',
+        hovertemplate="s=%{x:.3f}<br>Risk=%{y:.3f}<extra></extra>"
+    ), row=2, col=1)
+
+    # Add risk threshold
+    fig.add_hline(y=0.7, line_dash="dash", line_color="red", 
+                 annotation_text="High Risk Threshold", row=2, col=1)
+
+    # 4. dG at process T (assumes T_vals_query has process T)
+    if len(T_vals_query) > 0:
+        # Use middle temperature as "process T" for visualization
+        t_mid = len(T_vals_query) // 2
+        fig.add_trace(go.Scatter(
+            x=s_vals, y=path_results['dG'][:, t_mid],
+            mode='lines',
+            line=dict(color='purple', width=3),
+            name=f'ΔG at {T_vals_query[t_mid]}K',
+            hovertemplate="s=%{x:.3f}<br>ΔG=%{y:.0f} J/mol<extra></extra>"
+        ), row=2, col=2)
+        fig.add_hline(y=0, line_dash="dash", line_color="gold", row=2, col=2)
+
+    fig.update_layout(
+        height=800,
+        title_text="Gradient Path Analysis Dashboard",
+        showlegend=False
+    )
+
+    fig.update_xaxes(title_text="Path parameter s", row=1, col=1)
+    fig.update_yaxes(title_text="T* (K)", row=1, col=1)
+    fig.update_xaxes(title_text="Temperature (K)", row=1, col=2)
+    fig.update_yaxes(title_text="Path parameter s", row=1, col=2)
+    fig.update_xaxes(title_text="Path parameter s", row=2, col=1)
+    fig.update_yaxes(title_text="Normalized Risk", row=2, col=1)
+    fig.update_xaxes(title_text="Path parameter s", row=2, col=2)
+    fig.update_yaxes(title_text="ΔG (J/mol)", row=2, col=2)
+
+    return fig
+
+
+def render_gradient_design_tab(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                                  D_liq, D_fcc, lam_liq, lam_fcc,
+                                  co_vals, cr_vals, fe_vals, T_vals):
+    """Render Streamlit UI for multi-material gradient design."""
+
+    st.subheader("🔗 Multi-Material / Graded Structures Design")
+    st.markdown(r"""
+    **Physical Problem**: When joining two dissimilar Co-Cr-Fe-Ni alloys via AM, 
+    a sharp interface causes thermal mismatch cracking. A smooth composition 
+    gradient prevents this — but only if designed correctly.
+
+    **CPD Advantage**: The separable tensor structure allows instant evaluation 
+    of $G(x(s), T)$ for any parametric path $x(s)$, enabling optimization of:
+    - **T* smoothness**: Minimize $|
+abla_s T^*|$ to prevent interfacial cracking
+    - **Phase consistency**: Ensure stable FCC throughout the HAZ
+    - **Segregation control**: Avoid high binary-interaction regions
+
+    **Theory**: For a path $x(s) = (x_{Co}(s), x_{Cr}(s), x_{Fe}(s))$:
+    $$T^*(s) = 	ext{root of } \Delta G(x(s), T) = 0$$
+    $$	ext{Cracking Risk} \propto \left|rac{dT^*}{ds}
+ight| 	imes S_{seg}(x(s))$$
+    """)
+
+    # --- COMPOSITION INPUTS ---
+    st.subheader("📐 Define Alloy Compositions")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Alloy A (Start)**")
+        a_co = st.number_input("A: x_Co", 0.0, 1.0, 0.10, 0.01, key="a_co")
+        a_cr = st.number_input("A: x_Cr", 0.0, 1.0, 0.35, 0.01, key="a_cr")
+        a_fe = st.number_input("A: x_Fe", 0.0, 1.0, 0.15, 0.01, key="a_fe")
+        a_ni = 1.0 - a_co - a_cr - a_fe
+        st.markdown(f"A: x_Ni = **{a_ni:.3f}** {'✅' if a_ni >= 0 else '❌'}")
+
+    with col2:
+        st.markdown("**Alloy B (End)**")
+        b_co = st.number_input("B: x_Co", 0.0, 1.0, 0.30, 0.01, key="b_co")
+        b_cr = st.number_input("B: x_Cr", 0.0, 1.0, 0.10, 0.01, key="b_cr")
+        b_fe = st.number_input("B: x_Fe", 0.0, 1.0, 0.25, 0.01, key="b_fe")
+        b_ni = 1.0 - b_co - b_cr - b_fe
+        st.markdown(f"B: x_Ni = **{b_ni:.3f}** {'✅' if b_ni >= 0 else '❌'}")
+
+    # Validate compositions
+    valid_a = a_ni >= 0 and a_co >= 0 and a_cr >= 0 and a_fe >= 0
+    valid_b = b_ni >= 0 and b_co >= 0 and b_cr >= 0 and b_fe >= 0
+
+    if not (valid_a and valid_b):
+        st.error("❌ Invalid composition: all mole fractions must be ≥ 0 and sum to ≤ 1")
+        return
+
+    start_comp = np.array([a_co, a_cr, a_fe])
+    end_comp = np.array([b_co, b_cr, b_fe])
+
+    # --- OPTIMIZATION SETTINGS ---
+    st.subheader("⚙️ Gradient Optimization")
+
+    col_opt1, col_opt2, col_opt3 = st.columns(3)
+    with col_opt1:
+        n_points = st.slider("Path Points", 20, 100, 50)
+    with col_opt2:
+        penalty_weight = st.slider("T* Smoothness Weight", 0.1, 5.0, 1.0, 0.1)
+    with col_opt3:
+        curvature_weight = st.slider("Path Curvature Weight", 0.1, 2.0, 0.5, 0.1)
+
+    T_process = st.slider("Process Temperature (K)", 1500, 3500, 2800, 50)
+
+    # --- COMPUTE GRADIENT ---
+    if st.button("🔬 Design Optimal Gradient", use_container_width=True, type="primary"):
+        with st.spinner("Optimizing composition gradient path..."):
+
+            # Run optimization
+            result = design_optimal_gradient(
+                start_comp, end_comp, n_points=n_points,
+                penalty_weight=penalty_weight, curvature_weight=curvature_weight,
+                A_liq=A_liq, B_liq=B_liq, C_liq=C_liq, D_liq=D_liq, lam_liq=lam_liq,
+                A_fcc=A_fcc, B_fcc=B_fcc, C_fcc=C_fcc, D_fcc=D_fcc, lam_fcc=lam_fcc,
+                co_vals=co_vals, cr_vals=cr_vals, fe_vals=fe_vals, T_vals=T_vals,
+                T_process=T_process
+            )
+
+            # Display metrics
+            st.success("✅ Optimal gradient designed!")
+
+            metrics = result['metrics']
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("T* Range", f"{metrics['T_star_range']:.0f} K", 
+                     delta="Lower is better" if metrics['T_star_range'] < 200 else "⚠️ High")
+            c2.metric("T* Std Dev", f"{metrics['T_star_std']:.1f} K")
+            c3.metric("Max Segregation", f"{metrics['max_segregation_risk']:.3f}")
+            c4.metric("Path Efficiency", f"{metrics['path_length']/metrics['linear_path_length']:.2f}×",
+                     help="Ratio of actual path length to straight-line distance")
+
+            # Feasibility check
+            feasibility = check_gradient_feasibility(
+                result['path'], T_vals, A_liq, B_liq, C_liq, D_liq, lam_liq,
+                A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
+                co_vals, cr_vals, fe_vals, T_vals,
+                T_melt_pool=T_process, T_solidus=1600, T_haz=1200
+            )
+
+            st.subheader("🛡️ Feasibility Assessment")
+
+            # Safety score gauge
+            safety = feasibility['safety_score']
+            if safety >= 0.8:
+                st.success(f"✅ **SAFE** for AM (Score: {safety:.2f}/1.0)")
+            elif safety >= 0.5:
+                st.warning(f"⚠️ **CAUTION** (Score: {safety:.2f}/1.0) — Review issues below")
+            else:
+                st.error(f"❌ **RISKY** (Score: {safety:.2f}/1.0) — Significant redesign needed")
+
+            for issue in feasibility['issues']:
+                st.markdown(issue)
+
+            # 3D Path Visualization
+            st.subheader("🗺️ Gradient Path in Composition Space")
+            fig_3d = plot_gradient_path_3d(
+                result['path'], result['T_star'], result['s_vals'],
+                start_label=f"A ({a_co:.2f},{a_cr:.2f},{a_fe:.2f})",
+                end_label=f"B ({b_co:.2f},{b_cr:.2f},{b_fe:.2f})"
+            )
+            st.plotly_chart(fig_3d, use_container_width=True)
+
+            # Analysis Dashboard
+            st.subheader("📊 Gradient Analysis Dashboard")
+
+            # Re-evaluate for dashboard
+            path_results = evaluate_composition_path(
+                lambda s: result['path'][int(s * (n_points - 1))] if int(s * (n_points - 1)) < n_points else result['path'][-1],
+                result['s_vals'], T_vals,
+                A_liq, B_liq, C_liq, D_liq, lam_liq,
+                A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
+                co_vals, cr_vals, fe_vals, T_vals
+            )
+
+            fig_dash = plot_gradient_analysis_dashboard(path_results, T_vals, result['s_vals'])
+            st.plotly_chart(fig_dash, use_container_width=True)
+
+            # Composition table
+            with st.expander("📋 Detailed Composition Table", expanded=False):
+                df_grad = pd.DataFrame({
+                    's': result['s_vals'],
+                    'x_Co': result['path'][:, 0],
+                    'x_Cr': result['path'][:, 1],
+                    'x_Fe': result['path'][:, 2],
+                    'x_Ni': 1.0 - result['path'][:, 0] - result['path'][:, 1] - result['path'][:, 2],
+                    'T* (K)': result['T_star'],
+                    'Segregation Risk': result['segregation_risk']
+                })
+                st.dataframe(df_grad.style.format({
+                    's': '{:.3f}', 'x_Co': '{:.4f}', 'x_Cr': '{:.4f}', 
+                    'x_Fe': '{:.4f}', 'x_Ni': '{:.4f}', 'T* (K)': '{:.0f}',
+                    'Segregation Risk': '{:.3f}'
+                }).background_gradient(subset=['Segregation Risk'], cmap='Reds'), 
+                use_container_width=True)
+
+                csv_grad = df_grad.to_csv(index=False)
+                st.download_button("📥 Download Gradient CSV", csv_grad, 
+                                  "optimal_gradient.csv", "text/csv")
+
+            # Design recommendations
+            with st.expander("💡 Design Recommendations", expanded=True):
+                st.markdown(f"""
+                **Based on computed gradient analysis:**
+
+                | Metric | Value | Implication |
+                |--------|-------|-------------|
+                | T* range | {metrics['T_star_range']:.0f} K | {'✅ Low variation — stable melting' if metrics['T_star_range'] < 150 else '⚠️ High variation — adjust laser power'} |
+                | Path efficiency | {metrics['path_length']/metrics['linear_path_length']:.2f}× | {'✅ Near-linear — efficient' if metrics['path_length']/metrics['linear_path_length'] < 1.3 else '⚠️ Curved path — longer print time'} |
+                | Max segregation | {metrics['max_segregation_risk']:.3f} | {'✅ Low risk' if metrics['max_segregation_risk'] < 0.5 else '⚠️ High risk — consider intermediate alloy'} |
+
+                **AM Process Recommendations:**
+                - **Laser power**: {'Constant' if metrics['T_star_range'] < 100 else 'Variable — map to T*(s)'}
+                - **Scan speed**: {'Constant' if metrics['T_star_std'] < 50 else 'Reduce in high-T* regions'}
+                - **Powder feed**: Pre-blend {'2' if metrics['max_segregation_risk'] > 0.5 else '1'} hopper system for gradient control
+                - **Post-process**: {'Standard stress relief' if safety > 0.7 else 'Custom heat treatment for gradient zone'}
+                """)
+
+
 # =============================================
 # TAB 3: ADDITIVE MANUFACTURING DESIGN ASSISTANT
 # =============================================
@@ -3444,7 +4227,8 @@ with tab_am:
     # AM Analysis Sub-tabs
     am_subtab = st.radio("AM Analysis", 
                         ["🔥 Transition Temperature", "🌡️ Thermal Response", 
-                         "🎯 Composition Sensitivity", "⚠️ Defect Susceptibility"],
+                         "🎯 Composition Sensitivity", "⚠️ Defect Susceptibility",
+                         "🔗 Gradient Design"],
                         horizontal=True)
 
     if am_subtab == "🔥 Transition Temperature":
@@ -3463,6 +4247,23 @@ with tab_am:
         render_am_defect_tab(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
                             D_liq, D_fcc, lam_liq, lam_fcc,
                             co_vals_am, cr_vals_am, fe_vals_am, T_vals_am)
+
+    elif am_subtab == "🔗 Gradient Design":
+        # Validate session state first
+        is_valid, msg, factors = validate_cpd_session_state()
+        if not is_valid:
+            st.error(f"❌ Cannot load gradient design: {msg}")
+            st.info("💡 Please run CPD for both LIQUID and FCC phases in the Tensor Decomposition tab first.")
+        else:
+            render_gradient_design_tab(
+                factors['A_liq'], factors['A_fcc'], 
+                factors['B_liq'], factors['B_fcc'],
+                factors['C_liq'], factors['C_fcc'],
+                factors['D_liq'], factors['D_fcc'],
+                factors['lam_liq'], factors['lam_fcc'],
+                factors['co_vals'], factors['cr_vals'], 
+                factors['fe_vals'], factors['T_vals']
+            )
 
 # =============================================
 # EXPORT & FOOTER
