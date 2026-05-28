@@ -42,6 +42,12 @@
 
 [![meaningtowords](https://img.shields.io/badge/DF-v6.0-blue)](https://interface-drivingforce6.streamlit.app/) ( Correct Force calculation F = (delta G - 2 gamma/r)* dA, Correct Value of Pressure in Visualization, Inclusion of backward capillary pinning pressure 2 gamma/r,  Interfacial Areal Density based upon the grain diameter, Inteface Driving Force Calculation for Stable Phase at a Given Temperature and Composition, Theory and Visualization of Driving Force Value for Given Thermodynamic State , Quantitification of gamma interfacial energy in display)
 
+[![meaningtowords](https://img.shields.io/badge/DF-v6.0-blue)](https://interface-drivingforce6.streamlit.app/) ( Correct Force calculation F = (delta G - 2 gamma/r)* dA, Correct Value of Pressure in Visualization, Inclusion of backward capillary pinning pressure 2 gamma/r,  Interfacial Areal Density based upon the grain diameter, Inteface Driving Force Calculation for Stable Phase at a Given Temperature and Composition, Theory and Visualization of Driving Force Value for Given Thermodynamic State , Quantitification of gamma interfacial energy in display)
+
+[![meaningtowords](https://img.shields.io/badge/DF-v7.0-blue)](https://interface-drivingforce7.streamlit.app/) ( v6 upgraded to implement lazy-loading elements so that the app can run in cloud with low memory usage, Correct Force calculation F = (delta G - 2 gamma/r)* dA, Correct Value of Pressure in Visualization, Inclusion of backward capillary pinning pressure 2 gamma/r,  Interfacial Areal Density based upon the grain diameter, Inteface Driving Force Calculation for Stable Phase at a Given Temperature and Composition, Theory and Visualization of Driving Force Value for Given Thermodynamic State , Quantitification of gamma interfacial energy in display)
+
+
+
 
 # Tetrakaidecahedron FCC grain of CoCrFeNi alloy
 
