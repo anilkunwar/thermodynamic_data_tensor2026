@@ -599,48 +599,46 @@ def plot_component_heatmap(A, B, C, D, lam, co_vals, cr_vals, fe_vals, T_vals, r
                       xaxis_title="x_Co", yaxis_title="x_Cr", height=500)
     return fig
 
-def plot_reconstruction_surface(interp_liq, interp_fcc, A, B, C, D, lam_liq, lam_fcc,
-                                co_vals, cr_vals, fe_vals, T_vals, fixed_Fe=0.2, fixed_T=1400):
-    """Compare original and reconstructed Gibbs energy on a Co-Cr grid at fixed Fe and T."""
+#
+def plot_reconstruction_surface(interp_liq, A_liq, B_liq, C_liq, D_liq, lam_liq,
+                                co_vals, cr_vals, fe_vals, T_vals, fixed_Fe, fixed_T):
+    """
+    Compare original and reconstructed LIQUID Gibbs energy on a Co‑Cr grid
+    at fixed Fe and T.
+    """
     fe_idx = np.argmin(np.abs(fe_vals - fixed_Fe))
     T_idx = np.argmin(np.abs(T_vals - fixed_T))
-    
+
     Co_mesh, Cr_mesh = np.meshgrid(co_vals, cr_vals, indexing='ij')
-    pts_grid = np.column_stack([Co_mesh.ravel(), Cr_mesh.ravel(), np.full_like(Co_mesh.ravel(), fixed_Fe)])
-    
-    # Original values from interpolation
-    G_orig_liq = interp_liq(pts_grid).reshape(Co_mesh.shape)
-    G_orig_fcc = interp_fcc(pts_grid).reshape(Co_mesh.shape)
-    G_orig_stable = np.where(G_orig_liq <= G_orig_fcc, G_orig_liq, G_orig_fcc)
-    
-    # Reconstructed from CPD
-    # Build factor interpolators
-    def interp_factor(vals, factor_matrix, query):
-        return np.interp(query, vals, factor_matrix[:, r], left=np.nan, right=np.nan) for r in range(R)
-    R_liq = len(lam_liq)
-    R_fcc = len(lam_fcc)
-    G_recon_liq = np.zeros_like(Co_mesh)
-    G_recon_fcc = np.zeros_like(Co_mesh)
+    pts_grid = np.column_stack([Co_mesh.ravel(), Cr_mesh.ravel(),
+                                np.full_like(Co_mesh.ravel(), fixed_Fe)])
+
+    # Original LIQUID Gibbs from interpolation
+    G_orig = interp_liq(pts_grid).reshape(Co_mesh.shape)
+
+    # Reconstructed LIQUID from CPD factors
+    R = len(lam_liq)
+    G_recon = np.zeros_like(Co_mesh)
+
     for i, co in enumerate(co_vals):
+        # Interpolate A factors at this Co
+        A_vals = np.array([np.interp(co, co_vals, A_liq[:, r]) for r in range(R)])
         for j, cr in enumerate(cr_vals):
-            Aq = np.interp(co, co_vals, A[:, r]) for r in range(R_liq)
-            Bq = np.interp(cr, cr_vals, B[:, r]) for r in range(R_liq)
-            Cq = C[fe_idx, r] for r in range(R_liq)
-            Dq = D[T_idx, r] for r in range(R_liq)
-            G_recon_liq[i,j] = np.sum(lam_liq * Aq * Bq * Cq * Dq)
-            # similarly for FCC, but here we only show LIQUID reconstruction for brevity
-    # For FCC use A_fcc etc (would need separate factors)
-    # We'll just show LIQUID reconstruction vs original LIQUID
-    # For demo, we'll approximate: in practice pass both sets of factors
-    # Since we have only one set, we'll skip FCC reconstruction or use the same (not correct)
-    # Instead we'll show error map for LIQUID
-    mask_valid = ~np.isnan(G_orig_liq)
-    error = np.abs(G_orig_liq - G_recon_liq)
-    fig = go.Figure()
-    fig.add_trace(go.Heatmap(z=error, x=co_vals, y=cr_vals, colorscale='Viridis',
-                             colorbar=dict(title="|Error| (J/mol)")))
-    fig.update_layout(title=f"Reconstruction Error (LIQUID) at Fe={fixed_Fe}, T={fixed_T}K",
-                      xaxis_title="x_Co", yaxis_title="x_Cr", height=500)
+            B_vals = np.array([np.interp(cr, cr_vals, B_liq[:, r]) for r in range(R)])
+            C_vals = C_liq[fe_idx, :]   # shape (R,)
+            D_vals = D_liq[T_idx, :]    # shape (R,)
+            G_recon[i, j] = np.sum(lam_liq * A_vals * B_vals * C_vals * D_vals)
+
+    error = np.abs(G_orig - G_recon)
+
+    fig = go.Figure(data=go.Heatmap(
+        z=error, x=co_vals, y=cr_vals, colorscale='Viridis',
+        colorbar=dict(title="|Error| (J/mol)")
+    ))
+    fig.update_layout(
+        title=f"Reconstruction Error (LIQUID) at Fe={fixed_Fe:.3f}, T={fixed_T}K",
+        xaxis_title="x_Co", yaxis_title="x_Cr", height=500
+    )
     return fig
 
 def render_factor_matrix_visualisation(A_liq, B_liq, C_liq, D_liq, lam_liq,
