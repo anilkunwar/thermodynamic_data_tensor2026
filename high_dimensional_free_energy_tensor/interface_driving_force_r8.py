@@ -1,7 +1,7 @@
 """
 CoCrFeNi Gibbs Free Energy Explorer
 OPTIMIZED FOR STREAMLIT CLOUD (1GB RAM limit)
-FIXED: NameError (compute_total_area), KeyError (F_local)
+FIXED: Thermodynamic Sign Convention & Motion Direction
 PLUS: Comprehensive Theory on dF, Kinetics, and Phase Transformation
 WITH: Explicit Run Buttons, Lazy loading, cached interpolators
 PLUS: Grain Size Derived Interfacial Area Density (Sv) & Net Force
@@ -37,10 +37,10 @@ st.set_page_config(
 st.title("⚛️ Co-Cr-Fe-Ni Gibbs Energy & Interface Driving Force")
 st.markdown("""
 **Thermodynamic → Mechanical Conversion**  
-ΔG (J/mol) → ΔGᵥ = ΔG/Vₘ (Pa = N/m²) → Interface driving pressure  
-**Physics Corrected:** Local force on interface area element $dA = 1 \, \mu m^2$.  
-$F_{local} = P_{net} \cdot dA$ (No invalid bulk integration).  
-**Advanced:** Capillary correction → $P_{net}$ → Differential force $dF_{net}$ on μm³ element  
+ΔG (J/mol) → $P_{\text{chem}} = (G_{\text{LIQ}} - G_{\text{FCC}})/V_m$ (Pa) → Interface driving pressure  
+**Physics Corrected:** Positive $P_{\text{net}}$ drives LIQUID → FCC solidification.  
+$F_{\text{local}} = P_{\text{net}} \cdot dA_{\text{ref}}$ (Local force on $1 \, \mu m^2$ facet).  
+**Advanced:** Capillary correction → $P_{\text{net}}$ → Differential force $dF_{\text{net}}$ on μm³ element  
 **Enhanced:** Literature-based parameter ranges, uncertainty, & transformation kinetics
 """)
 
@@ -149,20 +149,19 @@ def composition_dependent_vm(x_co, x_cr, x_fe, x_ni):
 def normalize_temperature(T): return (T - T_MIN_NORMALIZE) / (T_MAX_NORMALIZE - T_MIN_NORMALIZE)
 def get_phase_preference(delta_G): return ("FCC favored", "#1f77b4", "🔵") if delta_G < 0 else ("LIQUID favored", "#ff7f0e", "🟠")
 def compute_Sv(d, k): return k / d
-def compute_total_area(Sv, V): return Sv * V  # 🔧 FIXED: Explicitly defined
+def compute_total_area(Sv, V): return Sv * V
 def compute_curvature_radius(d, geom=0.25): return d * geom
 def compute_capillary_pressure(g, r): return np.inf if r <= 0 else (2.0 * g) / r
-def compute_net_pressure(dGv, Pcap): return dGv - Pcap
 def compute_differential_force(P, Sv, dV): return P * Sv * dV
 
-def propagate_uncertainty_gamma_k(g_nom, k_nom, d_m, dGv, n=DEFAULT_MC_SAMPLES, g_range=None, k_range=None):
+def propagate_uncertainty_gamma_k(g_nom, k_nom, d_m, P_chem, n=DEFAULT_MC_SAMPLES, g_range=None, k_range=None):
     if g_range is None: g_range = (g_nom*0.8, g_nom*1.2)
     if k_range is None: k_range = (k_nom*0.85, k_nom*1.15)
     g_s = np.random.uniform(g_range[0], g_range[1], n)
     k_s = np.random.uniform(k_range[0], k_range[1], n)
     r = compute_curvature_radius(d_m)
     P_cap_s = compute_capillary_pressure(g_s, r)
-    P_net_s = compute_net_pressure(dGv, P_cap_s)
+    P_net_s = P_chem - P_cap_s
     Sv_s = compute_Sv(d_m, k_s)
     dF_s = compute_differential_force(P_net_s, Sv_s, DEFAULT_DV)
     return {
@@ -178,34 +177,31 @@ def display_latex_theory():
     st.markdown("## 📚 Thermodynamic Theory & Transformation Kinetics")
     with st.expander("📖 Read Full Theory: Sign, Magnitude & Kinetics of dF", expanded=True):
         st.markdown(r"""
-        ### 🔬 Physical Meaning of Differential Force ($dF$) and Pressure ($P_{net}$)
-        In solid-state phase transformations, the **driving force** is not a bulk property but an **interface-localized mechanical pressure**.
-        The net pressure driving the interface is:
-        $$P_{net} = \Delta G_v - P_{cap} = \frac{G_{FCC} - G_{LIQ}}{V_m} - \frac{2\gamma}{r}$$
-        The differential force on a volume element $dV$ or area element $dA$ is:
-        $$dF_{net} = P_{net} \cdot S_v \cdot dV \quad \text{or} \quad F_{local} = P_{net} \cdot dA_{ref}$$
+        ### 🔬 Physical Meaning of Differential Force ($dF$) and Net Pressure ($P_{\text{net}}$)
+        In solid-state phase transformations, the **driving force** is an interface-localized mechanical pressure.
+        The chemical driving pressure for LIQUID → FCC transformation is defined as:
+        $$P_{\text{chem}} = \frac{G_{\text{LIQ}} - G_{\text{FCC}}}{V_m} = -\frac{\Delta G}{V_m}$$
+        Capillary pressure ($P_{\text{cap}} = 2\gamma/r$) always resists curvature-driven growth. The net pressure is:
+        $$P_{\text{net}} = P_{\text{chem}} - P_{\text{cap}}$$
+        The differential force on a reference area $dA = 1\,\mu m^2$ is:
+        $$F_{\text{local}} = P_{\text{net}} \cdot dA$$
 
-        ### ⚡ Positive vs. Negative $dF$ and $P_{net}$
-        | Sign | Physical Interpretation | Phase Motion |
+        ### ⚡ Sign Convention & Phase Motion
+        | Sign of $P_{\text{net}}$ | Physical Interpretation | Phase Motion |
         |:---|:---|:---|
-        | **$dF > 0$ ($P_{net} > 0$)** | FCC phase has lower Gibbs energy than Liquid. | **Liquid → FCC growth** (Solidification) |
-        | **$dF < 0$ ($P_{net} < 0$)** | Liquid phase is thermodynamically stable. | **FCC → Liquid growth** (Remelting/Dissolution) |
-        | **$dF \approx 0$** | Phases are in local equilibrium. | Interface is stationary (no net transformation) |
+        | **$P_{\text{net}} > 0$** | Chemical driving force exceeds capillary resistance. | **LIQUID → FCC** (Solidification) |
+        | **$P_{\text{net}} < 0$** | Capillary resistance or thermodynamic instability dominates. | **FCC → LIQUID** (Remelting/Dissolution) |
+        | **$P_{\text{net}} \approx 0$** | Local equilibrium at the interface. | Interface stationary |
 
         ### 📉 Magnitude & Relationship to Transformation Kinetics
-        The magnitude $|dF|$ directly dictates the **interface velocity** $v$ via the linear kinetic law:
-        $$v = M \cdot |P_{net}| = M \cdot \frac{|dF_{local}|}{dA_{ref}}$$
+        The magnitude $|P_{\text{net}}|$ dictates the **interface velocity** $v$ via the linear kinetic law:
+        $$v = M \cdot |P_{\text{net}}|$$
         where $M$ is the **interface mobility** [m⁴/(J·s)].
         
         **In Co-Cr-Fe-Ni High-Entropy Alloys (HEAs):**
-        1. **High $|dF|$ (> 50 MPa equivalent):** Massive transformation. The interface can move at speeds approaching sonic limits, bypassing diffusion. Common during rapid laser cooling or deep undercooling.
-        2. **Moderate $|dF|$ (5–50 MPa):** Diffusive growth. Atomic rearrangement across the interface controls kinetics. Sluggish diffusion in HEAs (high activation energy) means even high $dF$ results in moderate velocities.
-        3. **Low $|dF|$ (< 5 MPa):** Nucleation-controlled or sluggish growth. Capillary pressure ($P_{cap} = 2\gamma/r$) dominates at small radii, suppressing growth of fine nuclei until they reach the critical radius $r^*$.
-        
-        ### 🌡️ Context for FCC vs LIQUID in CoCrFeNi
-        - **Cooling ($T < T_L$):** $\Delta G < 0 \Rightarrow dF > 0$. Liquid transforms to FCC. High interfacial energy ($\gamma \approx 0.6$ N/m) creates significant capillary resistance for small grains, requiring higher undercooling to overcome.
-        - **Heating ($T > T_S$):** $\Delta G > 0 \Rightarrow dF < 0$. FCC dissolves into liquid. Grain boundaries retreat as bulk liquid becomes stable.
-        - **Kinetic Limiting:** Even with high thermodynamic $dF$, HEA kinetics are often diffusion-limited. The actual transformation rate is $\min(v_{interface}, v_{diffusion})$.
+        1. **High $|P_{\text{net}}|$ (> 50 MPa):** Massive/rapid solidification. Interface moves fast, often partitionless. Common in laser/additive manufacturing.
+        2. **Moderate $|P_{\text{net}}|$ (5–50 MPa):** Diffusive growth. Sluggish HEA diffusion limits velocity despite high thermodynamic drive.
+        3. **Low $|P_{\text{net}}|$ (< 5 MPa):** Nucleation-controlled or capillary-blocked. Fine nuclei ($r < r^*$) cannot grow until undercooling increases $P_{\text{chem}}$ sufficiently.
         """)
         st.caption("📚 References: Porter & Easterling (2009), Christian (2002), Miracle & Senkov (2017) HEA kinetics review, Kaptay (2012) capillary models.")
 
@@ -288,7 +284,7 @@ if st.sidebar.button("🗑️ Clear All Results & Cache"):
             del st.session_state[key]
     st.rerun()
 
-# ================= MAIN COMPUTATION (EXPLICIT BUTTON) =================
+# ================= MAIN COMPUTATION (EXPLICIT BUTTON & FIXED PHYSICS) =================
 st.header(f"📊 Results at T = {T} K")
 
 current_inputs = (x_co, x_cr, x_fe, T, V_m, grain_size_um, shape_factor, gamma, dV_um3, use_capillary, area_mode)
@@ -308,34 +304,30 @@ if run_main or inputs_changed:
         delta_G = (g_fcc - g_liq) if (g_liq is not None and g_fcc is not None) else 0.0
         phase_pref, phase_color, phase_emoji = get_phase_preference(delta_G)
         
-        delta_G_v = delta_G / V_m if V_m != 0 else 0.0
-        delta_G_v_MPa = delta_G_v / 1e6
+        # 🔧 FIXED PHYSICS: Chemical driving pressure for LIQ -> FCC
+        P_chem = -delta_G / V_m if V_m != 0 else 0.0
         
         curvature_r = compute_curvature_radius(grain_size_m) if (grain_size_m and grain_size_m > 0) else None
-        P_capillary = compute_capillary_pressure(gamma, curvature_r) if (use_capillary and curvature_r) else 0.0
-        P_capillary_MPa = P_capillary / 1e6
+        P_cap = compute_capillary_pressure(gamma, curvature_r) if (use_capillary and curvature_r) else 0.0
         
-        if use_capillary and curvature_r:
-            P_net = compute_net_pressure(delta_G_v, P_capillary)
-        else:
-            P_net = delta_G_v
-        P_net_MPa = P_net / 1e6
+        # Net pressure driving the transformation
+        P_net = P_chem - P_cap
         
-        # 🔧 Physics Correct: Local Force on Reference Area (1 μm²)
+        # Local force on 1 μm²
         F_local = P_net * dA_REF
         F_local_nN = F_local * 1e9
         
-        # Differential Force on Volume Element dV
+        # Differential force on volume element dV
         dF_net = compute_differential_force(P_net, Sv, dV) if (Sv is not None) else None
         
         # 🔧 Safe State Storage (Guaranteed Keys)
         st.session_state["res_main"] = {
-            "g_liq": g_liq, "g_fcc": g_fcc, "delta_G": delta_G, "delta_G_v_MPa": delta_G_v_MPa,
-            "P_capillary_MPa": P_capillary_MPa, "P_net_MPa": P_net_MPa, "dF_net": dF_net,
-            "F_local": F_local, "F_local_nN": F_local_nN, "phase_pref": phase_pref, 
-            "phase_color": phase_color, "phase_emoji": phase_emoji, "Sv": Sv, 
-            "interface_area": interface_area, "curvature_r": curvature_r, "V_m": V_m, 
-            "grain_size_um": grain_size_um, "shape_factor": shape_factor, "delta_G_v": delta_G_v, "P_net": P_net
+            "g_liq": g_liq, "g_fcc": g_fcc, "delta_G": delta_G, 
+            "P_chem": P_chem, "P_cap": P_cap, "P_net": P_net,
+            "dF_net": dF_net, "F_local": F_local, "F_local_nN": F_local_nN, 
+            "phase_pref": phase_pref, "phase_color": phase_color, "phase_emoji": phase_emoji, 
+            "Sv": Sv, "interface_area": interface_area, "curvature_r": curvature_r, 
+            "V_m": V_m, "grain_size_um": grain_size_um, "shape_factor": shape_factor
         }
         st.session_state["last_main_inputs"] = current_inputs
         st.success("✅ Calculation complete!")
@@ -358,14 +350,13 @@ if "res_main" in st.session_state:
         st.divider()
         st.subheader("⚙️ Interface Driving Force (Mechanical)")
         col_p1, col_p2, col_p3, col_p4 = st.columns(4)
-        col_p1.metric("ΔGᵥ", f"{res['delta_G_v_MPa']:.3f} MPa")
-        if use_capillary:
-            col_p2.metric("P_capillary", f"{res['P_capillary_MPa']:.3f} MPa", delta="resists growth", delta_color="inverse")
-            col_p3.metric("P_net", f"{res['P_net_MPa']:.3f} MPa")
-            col_p4.metric("Motion", "→ FCC grows" if res["P_net"] > 0 else "→ LIQUID grows")
-        else:
-            col_p2.metric("SI units", f"{res['delta_G_v']:.2e} N/m²")
-            col_p3.metric("Motion", "→ FCC grows" if delta_G < 0 else "→ LIQUID grows")
+        col_p1.metric("Chemical Drive $P_{\text{chem}}$", f"{res['P_chem']/1e6:.3f} MPa", help="Positive when FCC is thermodynamically favored")
+        col_p2.metric("Capillary Resistance", f"{res['P_cap']/1e6:.3f} MPa", delta="resists growth", delta_color="inverse")
+        col_p3.metric("Net Pressure $P_{\text{net}}$", f"{res['P_net']/1e6:.3f} MPa")
+        
+        # 🔧 FIXED: Correct motion direction based on P_net sign
+        motion_dir = "→ LIQUID → FCC (Growth)" if res["P_net"] > 0 else "→ FCC → LIQUID (Remelting/Blocked)"
+        col_p4.metric("Interface Motion", motion_dir)
             
         st.markdown(f"""
         | Parameter | Value |
@@ -376,11 +367,10 @@ if "res_main" in st.session_state:
         | Reference Area $dA$ | $1.0 \times 10^{-12}$ m² (1 μm²) |
         """)
         col_f1, col_f2 = st.columns(2)
-        # 🔧 Safe Dictionary Access
         f_loc = res.get("F_local", 0.0)
-        col_f1.metric("Local Force ($F_{local}$)", f"{f_loc:.2e} N", help="Force acting on a 1 μm² interface facet")
-        if use_capillary and res.get("dF_net") is not None:
-            col_f2.metric("Differential Force ($dF_{net}$)", f"{res['dF_net']:.2e} N", help="Force on 1 μm³ volume element")
+        col_f1.metric("Local Force ($F_{\text{local}}$)", f"{f_loc:.2e} N", help="Force on 1 μm² interface facet")
+        if res.get("dF_net") is not None:
+            col_f2.metric("Differential Force ($dF_{\text{net}}$)", f"{res['dF_net']:.2e} N", help="Force on 1 μm³ volume element")
 
 # ================= VISUALIZATION TOOLS =================
 st.divider()
@@ -393,35 +383,35 @@ tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab_theory = st.tabs([
 with tab_theory:
     st.markdown("### 📖 Detailed Transformation Kinetics & Force Significance")
     st.markdown(r"""
-    This section details how the sign and magnitude of the calculated differential force ($dF$) and net pressure ($P_{net}$) govern the **kinetics of phase transformation** between the FCC solid solution and LIQUID phases in equiatomic and off-stoichiometric CoCrFeNi alloys.
+    This section details how the sign and magnitude of the calculated differential force ($dF$) and net pressure ($P_{\text{net}}$) govern the **kinetics of phase transformation** between the FCC solid solution and LIQUID phases in equiatomic and off-stoichiometric CoCrFeNi alloys.
     """)
     col_t1, col_t2 = st.columns(2)
     with col_t1:
-        st.markdown("#### 1. Positive $dF$ ($P_{net} > 0$): FCC Growth")
+        st.markdown("#### 1. Positive $P_{\text{net}}$ ($F_{\text{local}} > 0$): FCC Growth")
         st.markdown(r"""
-        - **Thermodynamic Condition:** $G_{FCC} < G_{LIQ}$ ($\Delta G < 0$).
+        - **Thermodynamic Condition:** $G_{\text{FCC}} < G_{\text{LIQ}} \Rightarrow P_{\text{chem}} > 0$.
         - **Physical Meaning:** The system reduces its free energy by converting liquid to solid.
-        - **Kinetics:** $v = M \cdot P_{net}$. In HEAs, $M$ is low due to sluggish diffusion. High $P_{net}$ (deep undercooling) is required to achieve measurable growth velocities.
-        - **Morphology:** High $dF$ favors dendritic or cellular growth. Low $dF$ near equilibrium yields faceted or planar interfaces.
+        - **Kinetics:** $v = M \cdot P_{\text{net}}$. In HEAs, $M$ is low due to sluggish diffusion. High $P_{\text{net}}$ (deep undercooling) is required to achieve measurable growth velocities.
+        - **Morphology:** High $P_{\text{net}}$ favors dendritic or cellular growth. Low $P_{\text{net}}$ near equilibrium yields faceted or planar interfaces.
         """)
     with col_t2:
-        st.markdown("#### 2. Negative $dF$ ($P_{net} < 0$): Liquid Growth / Remelting")
+        st.markdown("#### 2. Negative $P_{\text{net}}$ ($F_{\text{local}} < 0$): Liquid Growth / Remelting")
         st.markdown(r"""
-        - **Thermodynamic Condition:** $G_{FCC} > G_{LIQ}$ ($\Delta G > 0$).
+        - **Thermodynamic Condition:** $G_{\text{FCC}} > G_{\text{LIQ}}$ or $P_{\text{cap}} > P_{\text{chem}}$.
         - **Physical Meaning:** Solid is unstable; boundaries retreat into the liquid phase.
-        - **Kinetics:** Dissolution rate is controlled by solute diffusion away from the interface. In CoCrFeNi, Cr and Co often segregate, creating diffusion barriers that slow remelting even with high negative $dF$.
+        - **Kinetics:** Dissolution rate is controlled by solute diffusion away from the interface. In CoCrFeNi, Cr and Co often segregate, creating diffusion barriers that slow remelting even with high negative $P_{\text{net}}$.
         - **Grain Refinement:** Local remelting of unstable nuclei reduces $S_v$, shifting the system towards larger, more stable grains.
         """)
     st.divider()
     st.markdown("#### 3. Magnitude & Critical Driving Force")
     st.markdown(r"""
-    | $|dF|$ / $P_{net}$ Range | Transformation Regime | HEA Context |
+    | $|P_{\text{net}}|$ Range | Transformation Regime | HEA Context |
     |:---|:---|:---|
     | $< 10$ MPa | **Equilibrium / Nucleation** | Thermal fluctuations dominate. Nucleation rate $I \propto \exp(-1/\Delta G^2)$. Extremely slow. |
     | $10 - 100$ MPa | **Diffusive Growth** | Standard solidification. Interface controlled by atomic attachment. Sluggish HEA diffusion limits velocity to $10^{-5} - 10^{-2}$ m/s. |
     | $> 100$ MPa | **Massive / Athermal** | Interface moves faster than diffusion. "Partitionless" solidification. Common in additive manufacturing (laser cooling rates $>10^6$ K/s). |
     
-    **Capillary Suppression:** For small grains ($d < 1 \mu m$), $P_{cap} = 2\gamma/r$ can exceed $200$ MPa. If $P_{net} \le 0$, grains cannot grow despite $\Delta G < 0$. This explains why HEAs often exhibit a **grain size threshold** during rapid solidification.
+    **Capillary Suppression:** For small grains ($d < 1 \mu m$), $P_{\text{cap}} = 2\gamma/r$ can exceed $200$ MPa. If $P_{\text{net}} \le 0$, grains cannot grow despite $\Delta G < 0$. This explains why HEAs often exhibit a **grain size threshold** during rapid solidification.
     """)
 
 with tab1:
@@ -451,17 +441,17 @@ with tab2:
     st.markdown("### Phase Stability vs Temperature")
     if st.button("🌡️ Generate T Scan", key="btn_tab2"):
         with st.spinner("⏳ Scanning temperatures..."):
-            dG_list, dGv_list, valid_T = [], [], []
+            dG_list, P_chem_list, valid_T = [], [], []
             for Tv in temperatures:
                 gl, gf = evaluate_point_lazy(x_co, x_cr, x_fe, Tv, CSV_FILES_DIR)
                 if gl is not None and gf is not None:
                     dG = gf - gl; dG_list.append(dG)
                     vm = composition_dependent_vm(x_co, x_cr, x_fe, x_ni) if vm_model=="Composition‑dependent" else V_m
-                    dGv_list.append(dG/vm/1e6); valid_T.append(Tv)
+                    P_chem_list.append(-dG/vm/1e6); valid_T.append(Tv)
             if valid_T:
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(x=valid_T, y=dG_list, name="ΔG (J/mol)", yaxis="y1", line=dict(color="#2ca02c")))
-                fig.add_trace(go.Scatter(x=valid_T, y=dGv_list, name="ΔGᵥ (MPa)", yaxis="y2", line=dict(color="#d62728", dash="dot")))
+                fig.add_trace(go.Scatter(x=valid_T, y=P_chem_list, name="$P_{chem}$ (MPa)", yaxis="y2", line=dict(color="#d62728", dash="dot")))
                 fig.add_hline(y=0, line_dash="dash", line_color="gray")
                 fig.update_layout(title="Driving Force vs T", height=450)
                 st.session_state["plot_tab2"] = fig
@@ -469,16 +459,16 @@ with tab2:
     if "plot_tab2" in st.session_state: st.plotly_chart(st.session_state["plot_tab2"], use_container_width=True)
 
 with tab3:
-    st.markdown("### ΔGᵥ vs Composition")
+    st.markdown("### $P_{chem}$ vs Composition")
     scan_var3 = st.radio("Scan", ["x_Co", "x_Cr", "x_Fe"], horizontal=True, key="tab3_var")
     fixed_val3 = st.slider("Fixed", 0.0, 0.4, 0.2, 0.01, key="tab3_fixed")
-    if st.button("📊 Generate ΔGᵥ Scan", key="btn_tab3"):
+    if st.button("📊 Generate $P_{chem}$ Scan", key="btn_tab3"):
         with st.spinner("⏳ Computing..."):
             max_v = 1.0 - 2*fixed_val3 - 0.01
             if max_v < 0.01: st.error("❌ Fixed values too large")
             else:
                 xs = np.linspace(0.01, max_v, 100)
-                dGv_vals, valid = [], []
+                P_chem_vals, valid = [], []
                 for xv in xs:
                     if scan_var3=="x_Co": xc,xr,xf = xv,fixed_val3,fixed_val3
                     elif scan_var3=="x_Cr": xc,xr,xf = fixed_val3,xv,fixed_val3
@@ -488,10 +478,10 @@ with tab3:
                         gl, gf = evaluate_point_lazy(xc, xr, xf, T, CSV_FILES_DIR)
                         if gl and gf:
                             vm = composition_dependent_vm(xc,xr,xf,xn) if vm_model=="Composition‑dependent" else V_m
-                            dGv_vals.append((gf-gl)/vm/1e6); valid.append(xv)
-                fig = go.Figure(go.Scatter(x=valid, y=dGv_vals, fill="tozeroy", line=dict(color="#9467bd")))
+                            P_chem_vals.append(-(gf-gl)/vm/1e6); valid.append(xv)
+                fig = go.Figure(go.Scatter(x=valid, y=P_chem_vals, fill="tozeroy", line=dict(color="#9467bd")))
                 fig.add_hline(y=0, line_dash="dash", line_color="gray")
-                fig.update_layout(title=f"ΔGᵥ vs {scan_var3} at {T}K", height=400)
+                fig.update_layout(title=f"$P_{chem}$ vs {scan_var3} at {T}K", height=400)
                 st.session_state["plot_tab3"] = fig
     if "plot_tab3" in st.session_state: st.plotly_chart(st.session_state["plot_tab3"], use_container_width=True)
 
@@ -531,8 +521,8 @@ with tab6:
     if st.button("🕸️ Generate Radar", key="btn_tab6") and "res_main" in st.session_state:
         res = st.session_state["res_main"]
         G_REF, F_REF, P_REF = 15000.0, 1e-9, 200.0
-        cats = ["x_Co", "x_Cr", "x_Fe", "x_Ni", "T_norm", "|ΔG|/G", "|P|/P_ref", "|F_loc|/F_ref"]
-        vals = [x_co, x_cr, x_fe, x_ni, T/3300.0, abs(res["delta_G"])/G_REF, abs(res["P_net_MPa"])/P_REF, abs(res.get("F_local",0))/F_REF]
+        cats = ["x_Co", "x_Cr", "x_Fe", "x_Ni", "T_norm", "|ΔG|/G", "|P_net|/P_ref", "|F_loc|/F_ref"]
+        vals = [x_co, x_cr, x_fe, x_ni, T/3300.0, abs(res["delta_G"])/G_REF, abs(res["P_net"])/1e6/P_REF, abs(res.get("F_local",0))/F_REF]
         fig = go.Figure()
         fig.add_trace(go.Scatterpolar(r=vals, theta=cats, fill='toself', name='State', line=dict(color=res["phase_color"], width=2)))
         fig.add_trace(go.Scatterpolar(r=[0.25]*4 + [0.15]*4, theta=cats, fill='none', name='Ref', line=dict(dash='dot', color='gray')))
@@ -547,10 +537,11 @@ with tab7:
         if res.get("grain_size_um"):
             gs_um = np.linspace(0.5, 50, 200); gs_m = gs_um * 1e-6
             F_loc_s, dF_s = [], []
+            P_chem = res["P_chem"]
             for g in gs_m:
                 Sv_g = compute_Sv(g, res.get("shape_factor", 3.0))
                 Pc_g = compute_capillary_pressure(gamma, compute_curvature_radius(g))
-                Pn_g = compute_net_pressure(res["delta_G_v"], Pc_g)
+                Pn_g = P_chem - Pc_g
                 F_loc_s.append(Pn_g * dA_REF); dF_s.append(Pn_g * Sv_g * dV)
             fig = go.Figure()
             fig.add_trace(go.Scatter(x=gs_um.tolist(), y=np.array(F_loc_s)*1e9, name="F_local (nN)", line=dict(color="#1f77b4", width=3)))
@@ -568,7 +559,7 @@ with tab8:
         gs = res.get("grain_size_um", 10)*1e-6
         r = compute_curvature_radius(gs)
         g_sweep = np.linspace(0.3, 1.2, 50)
-        p_net_g = [(res["delta_G_v"] - compute_capillary_pressure(g, r))/1e6 for g in g_sweep]
+        p_net_g = [(res["P_chem"] - compute_capillary_pressure(g, r))/1e6 for g in g_sweep]
         fig1 = go.Figure(go.Scatter(x=g_sweep.tolist(), y=p_net_g, fill="tozeroy", line=dict(color="#d62728")))
         fig1.add_vline(x=gamma, line_dash="dash", line_color="black")
         k_sweep = np.linspace(2.0, 4.0, 50)
@@ -584,7 +575,7 @@ with tab8:
 st.divider()
 st.caption("""
 **Cloud Optimization**: Explicit buttons + lazy loading + cached interpolators = ✅ Streamlit Cloud ready (1GB RAM limit)  
-**Physics Corrected**: Local Force $F_{local} = P_{net} \cdot 1 \mu m^2$. Sign dictates FCC/LIQ motion direction. Magnitude dictates transformation velocity.  
+**Physics Corrected**: $P_{\text{net}} = P_{\text{chem}} - P_{\text{cap}}$. Positive $P_{\text{net}}$ drives LIQUID → FCC. Local force $F_{\text{local}} = P_{\text{net}} \cdot 1 \mu m^2$.  
 **Units**: Energy [J/mol], Pressure [Pa], Force [N], Length [m]  
 **References**: Porter & Easterling | Kaptay 2012 | Smith-Guttman 1953 | Turnbull 1950 | Christian 2002 | Miracle & Senkov 2017 (HEA Kinetics)
 """)
