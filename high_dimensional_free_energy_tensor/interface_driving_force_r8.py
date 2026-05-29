@@ -1,7 +1,7 @@
 """
 CoCrFeNi Gibbs Free Energy Explorer
 OPTIMIZED FOR STREAMLIT CLOUD (1GB RAM limit)
-FIXED: KeyError (F_local), Physics Corrected (Local Force on 1 μm²)
+FIXED: NameError (compute_total_area), KeyError (F_local)
 PLUS: Comprehensive Theory on dF, Kinetics, and Phase Transformation
 WITH: Explicit Run Buttons, Lazy loading, cached interpolators
 PLUS: Grain Size Derived Interfacial Area Density (Sv) & Net Force
@@ -149,6 +149,7 @@ def composition_dependent_vm(x_co, x_cr, x_fe, x_ni):
 def normalize_temperature(T): return (T - T_MIN_NORMALIZE) / (T_MAX_NORMALIZE - T_MIN_NORMALIZE)
 def get_phase_preference(delta_G): return ("FCC favored", "#1f77b4", "🔵") if delta_G < 0 else ("LIQUID favored", "#ff7f0e", "🟠")
 def compute_Sv(d, k): return k / d
+def compute_total_area(Sv, V): return Sv * V  # 🔧 FIXED: Explicitly defined
 def compute_curvature_radius(d, geom=0.25): return d * geom
 def compute_capillary_pressure(g, r): return np.inf if r <= 0 else (2.0 * g) / r
 def compute_net_pressure(dGv, Pcap): return dGv - Pcap
@@ -422,9 +423,6 @@ with tab_theory:
     
     **Capillary Suppression:** For small grains ($d < 1 \mu m$), $P_{cap} = 2\gamma/r$ can exceed $200$ MPa. If $P_{net} \le 0$, grains cannot grow despite $\Delta G < 0$. This explains why HEAs often exhibit a **grain size threshold** during rapid solidification.
     """)
-
-# [Tabs 1-8 generation remains identical to previous robust version, truncated for brevity in this prompt response, but fully functional in deployment]
-# To ensure zero errors, I will include the full tab code below.
 
 with tab1:
     st.markdown("### Gibbs Energy vs Composition")
