@@ -1,9 +1,8 @@
 """
 CoCrFeNi Gibbs Free Energy Explorer
 OPTIMIZED FOR STREAMLIT CLOUD (1GB RAM limit)
-FIXED: LaTeX/f-string NameError ({total} → {{total}})
 WITH: Explicit Run Buttons, Lazy loading, cached interpolators
-PLUS: Sunburst Charts, Radar Charts, LaTeX Theory Documentation
+PLUS: Interactive Sunburst, Normalized Radar with J/mol scaling, Driving Force Visuals
 PLUS: Grain Size Derived Interfacial Area Density (Sv) & Net Force
 PLUS: Capillary Pressure Correction & Differential Force Model
 PLUS: Literature-Based Parameter Ranges & Uncertainty Quantification
@@ -38,8 +37,8 @@ st.title("⚛️ Co-Cr-Fe-Ni Gibbs Energy & Interface Driving Force")
 st.markdown("""
 **Thermodynamic → Mechanical Conversion**  
 ΔG (J/mol) → ΔGᵥ = ΔG/Vₘ (Pa = N/m²) → Interface driving pressure  
-**New:** Grain size → $S_v$ → Total area $A_{total}$ → Net force $F_{total}$  
-**Advanced:** Capillary correction → $P_{net}$ → Differential force $dF_{net}$ on μm³ element  
+**New:** Grain size → $S_v$ → Total area $A_{{total}}$ → Net force $F_{{total}}$  
+**Advanced:** Capillary correction → $P_{{net}}$ → Differential force $dF_{{net}}$ on μm³ element  
 **Enhanced:** Literature-based parameter ranges with uncertainty quantification  
 **Optimized:** Explicit execution buttons + lazy loading for Streamlit Cloud
 """)
@@ -186,13 +185,13 @@ def display_latex_theory():
         st.markdown(r"""
         | **Concept** | **Mathematical Formulation** |
         |:---|:---|
-        | **Gibbs Free Energy** | $G_{\text{phase}}(x_{\text{Co}},x_{\text{Cr}},x_{\text{Fe}},x_{\text{Ni}},T)$ <br> $\sum_i x_i = 1$ |
-        | **Driving Force** | $\Delta G = G_{\text{FCC}} - G_{\text{LIQUID}} \quad [\text{J/mol}]$ |
-        | **Volumetric Pressure** | $\Delta G_v = \Delta G / V_m \quad [\text{Pa}]$ |
-        | **Area Density** | $S_v = k/d \quad [\text{m}^2/\text{m}^3]$ |
-        | **Capillary Pressure** | $P_{\text{cap}} = 2\gamma / r \quad [\text{Pa}]$ |
-        | **Net Pressure** | $P_{\text{net}} = \Delta G_v - P_{\text{cap}}$ |
-        | **Differential Force** | $dF_{\text{net}} = P_{\text{net}} \cdot S_v \cdot dV$ |
+        | **Gibbs Free Energy** | $G_{{\text{{phase}}}}(x_{{\text{{Co}}}},x_{{\text{{Cr}}}},x_{{\text{{Fe}}}},x_{{\text{{Ni}}}},T)$ <br> $\sum_i x_i = 1$ |
+        | **Driving Force** | $\Delta G = G_{{\text{{FCC}}}} - G_{{\text{{LIQUID}}}} \quad [\text{{J/mol}}]$ |
+        | **Volumetric Pressure** | $\Delta G_v = \Delta G / V_m \quad [\text{{Pa}}]$ |
+        | **Area Density** | $S_v = k/d \quad [\text{{m}}^2/\text{{m}}^3]$ |
+        | **Capillary Pressure** | $P_{{\text{{cap}}}} = 2\gamma / r \quad [\text{{Pa}}]$ |
+        | **Net Pressure** | $P_{{\text{{net}}}} = \Delta G_v - P_{{\text{{cap}}}}$ |
+        | **Differential Force** | $dF_{{\text{{net}}}} = P_{{\text{{net}}}} \cdot S_v \cdot dV$ |
         """)
         st.markdown("### 📖 References")
         st.markdown("""1. Porter & Easterling, *Phase Transformations* | 2. Kaptay, *Calphad* 2012 | 3. Smith-Guttman, *Trans. AIME* 1953 | 4. Turnbull, *J. Appl. Phys.* 1950 | 5. Christian, *Transformations* | 6. Underwood, *Stereology*""")
@@ -344,7 +343,6 @@ if "res_main" in st.session_state:
             col_p2.metric("SI units", f"{res['delta_G_v']:.2e} N/m²")
             col_p3.metric("Motion", "→ FCC grows" if delta_G < 0 else "→ LIQUID grows")
             
-        # 🔧 FIXED: Escaped LaTeX braces inside f-string
         st.markdown(f"""
         | Parameter | Value |
         |:---|:---|
@@ -394,12 +392,12 @@ if "res_main" in st.session_state:
     else:
         st.caption("💡 Enable Monte Carlo in sidebar to run uncertainty analysis")
 
-# ================= VISUALIZATION TOOLS (EXPLICIT BUTTONS PER TAB) =================
+# ================= VISUALIZATION TOOLS (IMPROVED) =================
 st.divider()
 st.header("🗺️ Exploration Tools")
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "📈 G vs Comp", "🌡️ Phase Map vs T", "📊 ΔGᵥ vs Comp", "📋 Raw Data",
-    "🌞 Sunburst", "🕸️ Radar", "📐 Grain Scaling", "📊 Sensitivity"
+    "🌞 Sunburst", "🕸️ Radar", "⚡ Driving Force", "📊 Sensitivity"
 ])
 
 with tab1:
@@ -488,67 +486,147 @@ with tab4:
         st.dataframe(st.session_state["plot_tab4"].style.format({"Co":"{:.3f}","Cr":"{:.3f}","Fe":"{:.3f}","Ni":"{:.3f}","G_LIQ":"{:.1f}","G_FCC":"{:.1f}"}), height=500, width="stretch")
         st.download_button("📥 Download CSV", st.session_state["plot_tab4"].to_csv(index=False), f"data_T{T}K.csv")
 
+# 🔧 IMPROVED SUNBURST CHART
 with tab5:
-    st.markdown("### 🌞 Sunburst Hierarchy")
+    st.markdown("### 🌞 Hierarchical Sunburst Visualization")
+    st.info("Interactive hierarchy: System → Temperature → Composition Elements → Thermodynamic Metrics")
     if st.button("🌞 Generate Sunburst", key="btn_tab5") and "res_main" in st.session_state:
         res = st.session_state["res_main"]
-        ids, parents, labels, values, colors = ["root"], [""], ["CoCrFeNi System"], [1], ["lightgray"]
-        ids.extend([f"T_{T}", f"T_{T}_Co", f"T_{T}_Cr", f"T_{T}_Fe", f"T_{T}_Ni"])
-        parents.extend(["root", "root", f"T_{T}", f"T_{T}", f"T_{T}"])
-        labels.extend([f"T={T} K", "Co", "Cr", "Fe", "Ni"])
-        values.extend([1, x_co, x_cr, x_fe, x_ni])
-        colors.extend(["lightblue", "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"])
-        force_val = abs(res["net_force"])
-        ids.extend([f"f_{i}" for i in range(4)])
-        parents.extend([p for p in [f"T_{T}_Co", f"T_{T}_Cr", f"T_{T}_Fe", f"T_{T}_Ni"]])
-        labels.extend([f"Force: {force_val:.2e} N"]*4)
-        values.extend([force_val]*4)
-        colors.extend(["gold"]*4)
+        g_norm = 10000.0  # Reference scale for Gibbs energy normalization
+        f_norm = max(abs(res["net_force"]), 1e-12)  # Dynamic force normalization
         
-        fig = go.Figure(go.Sunburst(ids=ids, parents=parents, labels=labels, values=values, marker=dict(colors=colors), branchvalues="total", maxdepth=3))
-        fig.update_layout(title="Hierarchy: T → Composition → Force", margin=dict(t=30,b=0,l=0,r=0), height=600)
+        # Build robust hierarchy for Plotly
+        ids = ["root", f"T_{T}", "Co", "Cr", "Fe", "Ni", "G_LIQ", "G_FCC", "ΔG", "F_net", "dF"]
+        parents = ["", "root", f"T_{T}", f"T_{T}", f"T_{T}", f"T_{T}", 
+                   f"T_{T}", f"T_{T}", f"T_{T}", f"T_{T}", f"T_{T}"]
+        labels = ["CoCrFeNi System", f"T = {T} K", "x_Co", "x_Cr", "x_Fe", "x_Ni",
+                  "G_LIQ", "G_FCC", "ΔG", "F_total", "dF_net"]
+        # Values represent visual weight in sunburst
+        values = [1.0, 1.0, x_co, x_cr, x_fe, x_ni,
+                  abs(res["g_liq"])/g_norm, abs(res["g_fcc"])/g_norm, abs(res["delta_G"])/g_norm,
+                  abs(res["net_force"])/f_norm, abs(res["dF_net"] if res["dF_net"] else 0)/f_norm]
+        colors = ["#f5f5f5", "#a8dadc", "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
+                  "#ffaa80", "#80b3ff", "#80ffb3", "#ffb380", "#8080ff"]
+        
+        hover_texts = [
+            "Root System", f"Temperature: {T} K",
+            f"Co: {x_co:.3f}", f"Cr: {x_cr:.3f}", f"Fe: {x_fe:.3f}", f"Ni: {x_ni:.3f}",
+            f"G_LIQUID = {res['g_liq']:.1f} J/mol", f"G_FCC = {res['g_fcc']:.1f} J/mol",
+            f"ΔG = {res['delta_G']:.1f} J/mol", f"F_total = {res['net_force']:.3e} N",
+            f"dF_net = {res['dF_net']:.3e} N" if res["dF_net"] else "dF_net = N/A"
+        ]
+        
+        fig = go.Figure(go.Sunburst(
+            ids=ids, parents=parents, labels=labels, values=values,
+            marker=dict(colors=colors, line=dict(width=1, color='white')),
+            branchvalues='total', hovertext=hover_texts,
+            hovertemplate='<b>%{label}</b><br>%{hovertext}<extra></extra>',
+            insidetextorientation='radial', maxdepth=3
+        ))
+        fig.update_layout(
+            title=dict(text="🌞 Thermodynamic Hierarchy", font=dict(size=16), x=0.5),
+            margin=dict(t=50, l=0, r=0, b=0), height=650
+        )
         st.session_state["plot_tab5"] = fig
     if "plot_tab5" in st.session_state: st.plotly_chart(st.session_state["plot_tab5"], width="stretch")
 
+# 🔧 IMPROVED RADAR CHART WITH G IN J/mol CONVERSION
 with tab6:
-    st.markdown("### 🕸️ Radar Chart")
+    st.markdown("### 🕸️ Multivariate Radar Chart (Normalized)")
+    st.info("Axes normalized to [0,1]. Hover shows actual J/mol and N values.")
     if st.button("🕸️ Generate Radar", key="btn_tab6") and "res_main" in st.session_state:
         res = st.session_state["res_main"]
-        cats = ["x_Co", "x_Cr", "x_Fe", "x_Ni", "T_norm", "|ΔGᵥ|"]
-        vals = [x_co, x_cr, x_fe, x_ni, normalize_temperature(T), min(1.0, abs(res["delta_G_v_MPa"])/100)]
-        fig = go.Figure(go.Scatterpolar(r=vals, theta=cats, fill="toself", name="State", line=dict(color=res["phase_color"], width=2)))
-        fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0,1])), title="Thermodynamic State Radar", height=500)
+        
+        # Normalization factors for J/mol and N
+        G_REF = 15000.0  # Reference Gibbs energy scale [J/mol]
+        F_REF = 10.0     # Reference force scale [N]
+        P_REF = 200.0    # Reference pressure scale [MPa]
+        T_REF = 3300.0   # Max temperature scale [K]
+        
+        # Radar values normalized to [0,1]
+        vals = [
+            x_co, x_cr, x_fe, x_ni,
+            T / T_REF,
+            abs(res["delta_G"]) / G_REF,
+            abs(res["g_liq"]) / G_REF,
+            abs(res["g_fcc"]) / G_REF,
+            abs(res["net_force"]) / F_REF,
+            abs(res["P_net_MPa"]) / P_REF
+        ]
+        cats = ["x_Co", "x_Cr", "x_Fe", "x_Ni", "T_norm", "|ΔG|", "|G_LIQ|", "|G_FCC|", "|F|", "|P_net|"]
+        
+        hover_vals = (
+            f"Co={x_co:.3f} | Cr={x_cr:.3f} | Fe={x_fe:.3f} | Ni={x_ni:.3f}<br>"
+            f"T={T} K | ΔG={res['delta_G']:.1f} J/mol<br>"
+            f"G_LIQ={res['g_liq']:.1f} J/mol | G_FCC={res['g_fcc']:.1f} J/mol<br>"
+            f"F_total={res['net_force']:.3e} N | P_net={res['P_net_MPa']:.2f} MPa"
+        )
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatterpolar(
+            r=vals, theta=cats, fill='toself', name='Current State',
+            line=dict(color=res["phase_color"], width=3),
+            fillcolor=f'rgba({int(res["phase_color"][1:3],16)},{int(res["phase_color"][3:5],16)},{int(res["phase_color"][5:7],16)},0.25)',
+            hovertemplate=hover_vals
+        ))
+        # Baseline: equiatomic reference
+        fig.add_trace(go.Scatterpolar(
+            r=[0.25]*4 + [0.5, 0.2, 0.2, 0.2, 0.1, 0.15],
+            theta=cats, fill='none', name='Equiatomic Ref',
+            line=dict(color='gray', width=1.5, dash='dot'), opacity=0.6
+        ))
+        fig.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 1.1], tickfont=dict(size=9))),
+            title=f"🕸️ Thermodynamic State Radar (T={T}K)<br><sup>Conversion: G_ref={G_REF:.0f} J/mol, F_ref={F_REF} N, P_ref={P_REF} MPa</sup>",
+            height=550, showlegend=True
+        )
         st.session_state["plot_tab6"] = fig
     if "plot_tab6" in st.session_state: st.plotly_chart(st.session_state["plot_tab6"], width="stretch")
 
+# 🔧 NEW: DRIVING FORCE VISUALIZATION (N)
 with tab7:
-    st.markdown("### 📐 Grain Size Scaling")
-    if st.button("📐 Generate Scaling Plots", key="btn_tab7") and "res_main" in st.session_state:
+    st.markdown("### ⚡ Driving Force Visualization (Newtons)")
+    st.info("Shows $F_{{total}}$ and $dF_{{net}}$ scaling with grain size. Current operating point highlighted.")
+    if st.button("⚡ Generate Force Plots", key="btn_tab7") and "res_main" in st.session_state:
         res = st.session_state["res_main"]
-        gs_um = np.linspace(0.5, 50, 100)
-        gs_m = gs_um * 1e-6
-        P_caps, P_nets = [], []
-        for g in gs_m:
-            r = compute_curvature_radius(g)
-            Pc = compute_capillary_pressure(gamma, r)
-            P_caps.append(Pc/1e6)
-            P_nets.append(compute_net_pressure(res["delta_G_v"], Pc)/1e6)
-        
-        fig1 = go.Figure()
-        fig1.add_trace(go.Scatter(x=gs_um, y=P_caps, name="P_cap", line=dict(color="#d62728", dash="dash")))
-        fig1.add_trace(go.Scatter(x=gs_um, y=P_nets, name="P_net", line=dict(color="#2ca02c")))
-        fig1.add_hline(y=res["delta_G_v_MPa"], line_dash="dot", line_color="blue")
-        fig1.update_layout(title="Pressure vs Grain Size", height=400)
-        
-        fig2 = go.Figure()
-        dF_vals = [compute_differential_force(compute_net_pressure(res["delta_G_v"], compute_capillary_pressure(gamma, compute_curvature_radius(g))), compute_Sv(g, res["shape_factor"]), dV) for g in gs_m]
-        fig2.add_trace(go.Scatter(x=gs_um, y=dF_vals, fill="tozeroy", line=dict(color="#9467bd")))
-        fig2.update_layout(title="dF_net vs Grain Size", height=400)
-        st.session_state["plot_tab7"] = (fig1, fig2)
-    if "plot_tab7" in st.session_state:
-        f1, f2 = st.session_state["plot_tab7"]
-        st.plotly_chart(f1, width="stretch")
-        st.plotly_chart(f2, width="stretch")
+        if res["grain_size_um"] is None:
+            st.warning("⚠️ Enable Grain Size mode in sidebar to view force scaling.")
+        else:
+            gs_um = np.linspace(0.5, 50, 200)
+            gs_m = gs_um * 1e-6
+            
+            F_total_s, dF_s = [], []
+            for g in gs_m:
+                Sv_g = compute_Sv(g, res["shape_factor"])
+                A_g = Sv_g * (res["interface_area"]/res["Sv"] if res["Sv"] else 1e-6)
+                r_g = compute_curvature_radius(g)
+                Pc_g = compute_capillary_pressure(gamma, r_g)
+                Pn_g = compute_net_pressure(res["delta_G_v"], Pc_g)
+                F_total_s.append(Pn_g * A_g)
+                dF_s.append(Pn_g * Sv_g * dV)
+            
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=gs_um, y=F_total_s, name="F_total (N)", line=dict(color="#1f77b4", width=3)))
+            fig.add_trace(go.Scatter(x=gs_um, y=dF_s, name="dF_net (N, μm³ basis)", yaxis="y2", line=dict(color="#d62728", dash="dash")))
+            
+            # Current operating point
+            fig.add_trace(go.Scatter(x=[res["grain_size_um"]], y=[res["net_force"]], 
+                                     mode='markers', name="Current F_total",
+                                     marker=dict(symbol='circle', size=12, color='#1f77b4', line=dict(width=3, color='white'))))
+            if res["dF_net"]:
+                fig.add_trace(go.Scatter(x=[res["grain_size_um"]], y=[res["dF_net"]], 
+                                         mode='markers', name="Current dF_net",
+                                         marker=dict(symbol='square', size=10, color='#d62728', line=dict(width=3, color='white'))))
+            
+            fig.update_layout(
+                title="Driving Force vs Grain Size",
+                xaxis_title="Grain Size d (μm)",
+                yaxis=dict(title="F_total (N)", titlefont=dict(color="#1f77b4"), tickfont=dict(color="#1f77b4")),
+                yaxis2=dict(title="dF_net (N)", titlefont=dict(color="#d62728"), tickfont=dict(color="#d62728"), overlaying="y", side="right"),
+                height=450, hovermode="x unified", showlegend=True
+            )
+            st.session_state["plot_tab7"] = fig
+    if "plot_tab7" in st.session_state: st.plotly_chart(st.session_state["plot_tab7"], width="stretch")
 
 with tab8:
     st.markdown("### 📊 Sensitivity Analysis")
