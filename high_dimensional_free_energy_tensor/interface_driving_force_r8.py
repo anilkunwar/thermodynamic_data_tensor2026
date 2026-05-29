@@ -1,6 +1,7 @@
 """
 CoCrFeNi Gibbs Free Energy Explorer
 OPTIMIZED FOR STREAMLIT CLOUD (1GB RAM limit)
+FIXED: PlotlyError (serialization, axis config, sunburst validation)
 WITH: Explicit Run Buttons, Lazy loading, cached interpolators
 PLUS: Interactive Sunburst, Normalized Radar with J/mol scaling, Driving Force Visuals
 PLUS: Grain Size Derived Interfacial Area Density (Sv) & Net Force
@@ -175,7 +176,7 @@ def propagate_uncertainty_gamma_k(g_nom, k_nom, d_m, dGv, n=DEFAULT_MC_SAMPLES, 
         "P_net_95ci": norm.interval(0.95, loc=np.mean(P_net_s), scale=np.std(P_net_s)),
         "dF_net_mean": np.mean(dF_s), "dF_net_std": np.std(dF_s),
         "dF_net_95ci": norm.interval(0.95, loc=np.mean(dF_s), scale=np.std(dF_s)),
-        "samples": {"gamma": g_s, "P_net": P_net_s, "dF": dF_s}
+        "samples": {"gamma": g_s.tolist(), "P_net": P_net_s.tolist(), "dF": dF_s.tolist()}
     }
 
 # ================= LATEX THEORY =================
@@ -287,7 +288,7 @@ if inputs_changed and "res_main" in st.session_state:
             del st.session_state[key]
 
 col_btn, col_status = st.columns([3, 1])
-run_main = col_btn.button("🚀 Compute Gibbs & Interface Forces", type="primary", width="stretch")
+run_main = col_btn.button("🚀 Compute Gibbs & Interface Forces", type="primary", use_container_width=True)
 
 if run_main or inputs_changed:
     with st.spinner("⏳ Computing Gibbs energies & interface forces..."):
@@ -360,7 +361,7 @@ if "res_main" in st.session_state:
     if enable_uncertainty and res["g_liq"] is not None:
         st.divider()
         st.subheader("📊 Monte Carlo Uncertainty Propagation")
-        run_mc = st.button("📊 Run Monte Carlo Uncertainty", type="secondary", width="stretch")
+        run_mc = st.button("📊 Run Monte Carlo Uncertainty", type="secondary", use_container_width=True)
         
         mc_inputs = (res["delta_G_v"], gamma, shape_factor, res["grain_size_um"], n_mc_samples, gamma_uncertainty_pct, k_uncertainty_pct)
         if run_mc or st.session_state.get("last_mc_inputs") != mc_inputs:
@@ -382,17 +383,17 @@ if "res_main" in st.session_state:
             if st.checkbox("📈 Show Monte Carlo Distributions", key="show_mc_dist"):
                 col_plot1, col_plot2 = st.columns(2)
                 with col_plot1:
-                    fig_p = go.Figure(go.Histogram(x=mc["samples"]["P_net"]/1e6, nbinsx=30, marker_color=res["phase_color"], opacity=0.7))
+                    fig_p = go.Figure(go.Histogram(x=mc["samples"]["P_net"], nbinsx=30, marker_color=res["phase_color"], opacity=0.7))
                     fig_p.update_layout(title="P_net Distribution", xaxis_title="P_net (MPa)", height=300)
-                    st.plotly_chart(fig_p, width="stretch")
+                    st.plotly_chart(fig_p, use_container_width=True)
                 with col_plot2:
                     fig_f = go.Figure(go.Histogram(x=mc["samples"]["dF"], nbinsx=30, marker_color="#9467bd", opacity=0.7))
                     fig_f.update_layout(title="dF_net Distribution", xaxis_title="dF_net (N)", height=300)
-                    st.plotly_chart(fig_f, width="stretch")
+                    st.plotly_chart(fig_f, use_container_width=True)
     else:
         st.caption("💡 Enable Monte Carlo in sidebar to run uncertainty analysis")
 
-# ================= VISUALIZATION TOOLS (IMPROVED) =================
+# ================= VISUALIZATION TOOLS (ROBUST & ERROR-FREE) =================
 st.divider()
 st.header("🗺️ Exploration Tools")
 tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
@@ -422,7 +423,7 @@ with tab1:
                 fig.add_trace(go.Scatter(x=valid, y=g_fcc_s, name="G_FCC", line=dict(color="#1f77b4", width=2)))
                 fig.update_layout(title=f"G vs {scan_var1} at {T}K", xaxis_title=scan_var1, yaxis_title="G (J/mol)", height=400, hovermode="x unified")
                 st.session_state["plot_tab1"] = fig
-    if "plot_tab1" in st.session_state: st.plotly_chart(st.session_state["plot_tab1"], width="stretch")
+    if "plot_tab1" in st.session_state: st.plotly_chart(st.session_state["plot_tab1"], use_container_width=True)
 
 with tab2:
     st.markdown("### Phase Stability vs Temperature")
@@ -446,7 +447,7 @@ with tab2:
                 fig.add_hline(y=0, line_dash="dash", line_color="gray")
                 fig.update_layout(title="Driving Force vs T", xaxis_title="T (K)", yaxis=dict(title="ΔG", color="#2ca02c"), yaxis2=dict(title="ΔGᵥ", color="#d62728", overlaying="y", side="right"), height=450)
                 st.session_state["plot_tab2"] = fig
-    if "plot_tab2" in st.session_state: st.plotly_chart(st.session_state["plot_tab2"], width="stretch")
+    if "plot_tab2" in st.session_state: st.plotly_chart(st.session_state["plot_tab2"], use_container_width=True)
 
 with tab3:
     st.markdown("### ΔGᵥ vs Composition")
@@ -474,7 +475,7 @@ with tab3:
                 fig.add_hline(y=0, line_dash="dash", line_color="gray")
                 fig.update_layout(title=f"ΔGᵥ vs {scan_var3} at {T}K", height=400)
                 st.session_state["plot_tab3"] = fig
-    if "plot_tab3" in st.session_state: st.plotly_chart(st.session_state["plot_tab3"], width="stretch")
+    if "plot_tab3" in st.session_state: st.plotly_chart(st.session_state["plot_tab3"], use_container_width=True)
 
 with tab4:
     st.markdown("### 📋 Raw Data")
@@ -483,107 +484,66 @@ with tab4:
             df = load_single_temperature_csv(T, CSV_FILES_DIR)
             st.session_state["plot_tab4"] = df
     if "plot_tab4" in st.session_state:
-        st.dataframe(st.session_state["plot_tab4"].style.format({"Co":"{:.3f}","Cr":"{:.3f}","Fe":"{:.3f}","Ni":"{:.3f}","G_LIQ":"{:.1f}","G_FCC":"{:.1f}"}), height=500, width="stretch")
+        st.dataframe(st.session_state["plot_tab4"].style.format({"Co":"{:.3f}","Cr":"{:.3f}","Fe":"{:.3f}","Ni":"{:.3f}","G_LIQ":"{:.1f}","G_FCC":"{:.1f}"}), height=500, use_container_width=True)
         st.download_button("📥 Download CSV", st.session_state["plot_tab4"].to_csv(index=False), f"data_T{T}K.csv")
 
-# 🔧 IMPROVED SUNBURST CHART
+# 🔧 ROBUST SUNBURST CHART
 with tab5:
     st.markdown("### 🌞 Hierarchical Sunburst Visualization")
     st.info("Interactive hierarchy: System → Temperature → Composition Elements → Thermodynamic Metrics")
     if st.button("🌞 Generate Sunburst", key="btn_tab5") and "res_main" in st.session_state:
         res = st.session_state["res_main"]
-        g_norm = 10000.0  # Reference scale for Gibbs energy normalization
-        f_norm = max(abs(res["net_force"]), 1e-12)  # Dynamic force normalization
-        
-        # Build robust hierarchy for Plotly
-        ids = ["root", f"T_{T}", "Co", "Cr", "Fe", "Ni", "G_LIQ", "G_FCC", "ΔG", "F_net", "dF"]
-        parents = ["", "root", f"T_{T}", f"T_{T}", f"T_{T}", f"T_{T}", 
-                   f"T_{T}", f"T_{T}", f"T_{T}", f"T_{T}", f"T_{T}"]
-        labels = ["CoCrFeNi System", f"T = {T} K", "x_Co", "x_Cr", "x_Fe", "x_Ni",
-                  "G_LIQ", "G_FCC", "ΔG", "F_total", "dF_net"]
-        # Values represent visual weight in sunburst
-        values = [1.0, 1.0, x_co, x_cr, x_fe, x_ni,
-                  abs(res["g_liq"])/g_norm, abs(res["g_fcc"])/g_norm, abs(res["delta_G"])/g_norm,
-                  abs(res["net_force"])/f_norm, abs(res["dF_net"] if res["dF_net"] else 0)/f_norm]
-        colors = ["#f5f5f5", "#a8dadc", "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
-                  "#ffaa80", "#80b3ff", "#80ffb3", "#ffb380", "#8080ff"]
-        
-        hover_texts = [
-            "Root System", f"Temperature: {T} K",
-            f"Co: {x_co:.3f}", f"Cr: {x_cr:.3f}", f"Fe: {x_fe:.3f}", f"Ni: {x_ni:.3f}",
-            f"G_LIQUID = {res['g_liq']:.1f} J/mol", f"G_FCC = {res['g_fcc']:.1f} J/mol",
-            f"ΔG = {res['delta_G']:.1f} J/mol", f"F_total = {res['net_force']:.3e} N",
-            f"dF_net = {res['dF_net']:.3e} N" if res["dF_net"] else "dF_net = N/A"
+        # Safe normalization for visual sizing
+        vals = [
+            1.0, 1.0,
+            max(x_co, 0.0), max(x_cr, 0.0), max(x_fe, 0.0), max(x_ni, 0.0),
+            abs(res["g_liq"]) / 10000.0, abs(res["g_fcc"]) / 10000.0, abs(res["delta_G"]) / 10000.0,
+            abs(res["net_force"]) / max(abs(res["net_force"]), 1e-12),
+            abs(res["dF_net"] if res["dF_net"] else 0) / max(abs(res["dF_net"]), 1e-12)
         ]
+        ids = ["root", "T", "Co", "Cr", "Fe", "Ni", "GL", "GF", "dG", "FT", "dF"]
+        parents = ["", "root", "T", "T", "T", "T", "T", "T", "T", "T", "T"]
+        labels = ["System", f"T={T}K", "Co", "Cr", "Fe", "Ni", "G_LIQ", "G_FCC", "ΔG", "F_tot", "dF"]
+        colors = ["#f5f5f5", "#a8dadc", "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#ffaa80", "#80b3ff", "#80ffb3", "#ffb380", "#8080ff"]
         
         fig = go.Figure(go.Sunburst(
-            ids=ids, parents=parents, labels=labels, values=values,
-            marker=dict(colors=colors, line=dict(width=1, color='white')),
-            branchvalues='total', hovertext=hover_texts,
+            ids=ids, parents=parents, labels=labels, values=vals,
+            marker=dict(colors=colors, line=dict(width=0.5, color='white')),
+            hovertext=[f"Root", f"Temp: {T}K", f"x_Co={x_co:.3f}", f"x_Cr={x_cr:.3f}", f"x_Fe={x_fe:.3f}", f"x_Ni={x_ni:.3f}",
+                       f"G_LIQ={res['g_liq']:.1f} J/mol", f"G_FCC={res['g_fcc']:.1f} J/mol", f"ΔG={res['delta_G']:.1f} J/mol",
+                       f"F={res['net_force']:.2e} N", f"dF={res['dF_net']:.2e} N"],
             hovertemplate='<b>%{label}</b><br>%{hovertext}<extra></extra>',
-            insidetextorientation='radial', maxdepth=3
+            maxdepth=3
         ))
-        fig.update_layout(
-            title=dict(text="🌞 Thermodynamic Hierarchy", font=dict(size=16), x=0.5),
-            margin=dict(t=50, l=0, r=0, b=0), height=650
-        )
+        fig.update_layout(margin=dict(t=30, l=0, r=0, b=0), height=600)
         st.session_state["plot_tab5"] = fig
-    if "plot_tab5" in st.session_state: st.plotly_chart(st.session_state["plot_tab5"], width="stretch")
+    if "plot_tab5" in st.session_state: st.plotly_chart(st.session_state["plot_tab5"], use_container_width=True)
 
-# 🔧 IMPROVED RADAR CHART WITH G IN J/mol CONVERSION
+# 🔧 ROBUST RADAR CHART
 with tab6:
     st.markdown("### 🕸️ Multivariate Radar Chart (Normalized)")
     st.info("Axes normalized to [0,1]. Hover shows actual J/mol and N values.")
     if st.button("🕸️ Generate Radar", key="btn_tab6") and "res_main" in st.session_state:
         res = st.session_state["res_main"]
+        G_REF, F_REF, P_REF = 15000.0, 10.0, 200.0
+        cats = ["x_Co", "x_Cr", "x_Fe", "x_Ni", "T/K", "|ΔG|/G_ref", "|G_LIQ|/G_ref", "|G_FCC|/G_ref", "|F|/F_ref", "|P|/P_ref"]
+        vals = [x_co, x_cr, x_fe, x_ni, T/3300.0, abs(res["delta_G"])/G_REF, abs(res["g_liq"])/G_REF, abs(res["g_fcc"])/G_REF, abs(res["net_force"])/F_REF, abs(res["P_net_MPa"])/P_REF]
         
-        # Normalization factors for J/mol and N
-        G_REF = 15000.0  # Reference Gibbs energy scale [J/mol]
-        F_REF = 10.0     # Reference force scale [N]
-        P_REF = 200.0    # Reference pressure scale [MPa]
-        T_REF = 3300.0   # Max temperature scale [K]
-        
-        # Radar values normalized to [0,1]
-        vals = [
-            x_co, x_cr, x_fe, x_ni,
-            T / T_REF,
-            abs(res["delta_G"]) / G_REF,
-            abs(res["g_liq"]) / G_REF,
-            abs(res["g_fcc"]) / G_REF,
-            abs(res["net_force"]) / F_REF,
-            abs(res["P_net_MPa"]) / P_REF
-        ]
-        cats = ["x_Co", "x_Cr", "x_Fe", "x_Ni", "T_norm", "|ΔG|", "|G_LIQ|", "|G_FCC|", "|F|", "|P_net|"]
-        
-        hover_vals = (
-            f"Co={x_co:.3f} | Cr={x_cr:.3f} | Fe={x_fe:.3f} | Ni={x_ni:.3f}<br>"
-            f"T={T} K | ΔG={res['delta_G']:.1f} J/mol<br>"
-            f"G_LIQ={res['g_liq']:.1f} J/mol | G_FCC={res['g_fcc']:.1f} J/mol<br>"
-            f"F_total={res['net_force']:.3e} N | P_net={res['P_net_MPa']:.2f} MPa"
-        )
+        hover_vals = (f"ΔG: {res['delta_G']:.1f} J/mol | G_LIQ: {res['g_liq']:.1f} J/mol<br>"
+                      f"G_FCC: {res['g_fcc']:.1f} J/mol | F_total: {res['net_force']:.2e} N<br>"
+                      f"P_net: {res['P_net_MPa']:.2f} MPa")
         
         fig = go.Figure()
-        fig.add_trace(go.Scatterpolar(
-            r=vals, theta=cats, fill='toself', name='Current State',
-            line=dict(color=res["phase_color"], width=3),
-            fillcolor=f'rgba({int(res["phase_color"][1:3],16)},{int(res["phase_color"][3:5],16)},{int(res["phase_color"][5:7],16)},0.25)',
-            hovertemplate=hover_vals
-        ))
-        # Baseline: equiatomic reference
-        fig.add_trace(go.Scatterpolar(
-            r=[0.25]*4 + [0.5, 0.2, 0.2, 0.2, 0.1, 0.15],
-            theta=cats, fill='none', name='Equiatomic Ref',
-            line=dict(color='gray', width=1.5, dash='dot'), opacity=0.6
-        ))
-        fig.update_layout(
-            polar=dict(radialaxis=dict(visible=True, range=[0, 1.1], tickfont=dict(size=9))),
-            title=f"🕸️ Thermodynamic State Radar (T={T}K)<br><sup>Conversion: G_ref={G_REF:.0f} J/mol, F_ref={F_REF} N, P_ref={P_REF} MPa</sup>",
-            height=550, showlegend=True
-        )
+        fig.add_trace(go.Scatterpolar(r=vals, theta=cats, fill='toself', name='State', 
+                                      line=dict(color=res["phase_color"], width=2),
+                                      hovertemplate=hover_vals))
+        fig.add_trace(go.Scatterpolar(r=[0.25]*4 + [0.3]*6, theta=cats, fill='none', name='Ref', 
+                                      line=dict(dash='dot', color='gray')))
+        fig.update_layout(polar=dict(radialaxis=dict(visible=True, range=[0,1])), height=500)
         st.session_state["plot_tab6"] = fig
-    if "plot_tab6" in st.session_state: st.plotly_chart(st.session_state["plot_tab6"], width="stretch")
+    if "plot_tab6" in st.session_state: st.plotly_chart(st.session_state["plot_tab6"], use_container_width=True)
 
-# 🔧 NEW: DRIVING FORCE VISUALIZATION (N)
+# 🔧 ROBUST DRIVING FORCE VISUALIZATION
 with tab7:
     st.markdown("### ⚡ Driving Force Visualization (Newtons)")
     st.info("Shows $F_{{total}}$ and $dF_{{net}}$ scaling with grain size. Current operating point highlighted.")
@@ -594,39 +554,31 @@ with tab7:
         else:
             gs_um = np.linspace(0.5, 50, 200)
             gs_m = gs_um * 1e-6
-            
-            F_total_s, dF_s = [], []
+            F_tot_s, dF_s = [], []
+            V_samp = res["interface_area"] / res["Sv"] if res["Sv"] and res["Sv"] > 0 else 1e-6
             for g in gs_m:
                 Sv_g = compute_Sv(g, res["shape_factor"])
-                A_g = Sv_g * (res["interface_area"]/res["Sv"] if res["Sv"] else 1e-6)
-                r_g = compute_curvature_radius(g)
-                Pc_g = compute_capillary_pressure(gamma, r_g)
+                A_g = Sv_g * V_samp
+                Pc_g = compute_capillary_pressure(gamma, compute_curvature_radius(g))
                 Pn_g = compute_net_pressure(res["delta_G_v"], Pc_g)
-                F_total_s.append(Pn_g * A_g)
+                F_tot_s.append(Pn_g * A_g)
                 dF_s.append(Pn_g * Sv_g * dV)
             
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=gs_um, y=F_total_s, name="F_total (N)", line=dict(color="#1f77b4", width=3)))
-            fig.add_trace(go.Scatter(x=gs_um, y=dF_s, name="dF_net (N, μm³ basis)", yaxis="y2", line=dict(color="#d62728", dash="dash")))
-            
-            # Current operating point
-            fig.add_trace(go.Scatter(x=[res["grain_size_um"]], y=[res["net_force"]], 
-                                     mode='markers', name="Current F_total",
-                                     marker=dict(symbol='circle', size=12, color='#1f77b4', line=dict(width=3, color='white'))))
+            fig.add_trace(go.Scatter(x=gs_um.tolist(), y=F_tot_s, name="F_total", line=dict(color="#1f77b4", width=3)))
+            fig.add_trace(go.Scatter(x=gs_um.tolist(), y=dF_s, name="dF_net", yaxis="y2", line=dict(color="#d62728", dash="dash")))
+            fig.add_trace(go.Scatter(x=[float(res["grain_size_um"])], y=[float(res["net_force"])], mode='markers', name="Curr F", marker=dict(size=12, color='#1f77b4')))
             if res["dF_net"]:
-                fig.add_trace(go.Scatter(x=[res["grain_size_um"]], y=[res["dF_net"]], 
-                                         mode='markers', name="Current dF_net",
-                                         marker=dict(symbol='square', size=10, color='#d62728', line=dict(width=3, color='white'))))
-            
+                fig.add_trace(go.Scatter(x=[float(res["grain_size_um"])], y=[float(res["dF_net"])], mode='markers', name="Curr dF", yaxis="y2", marker=dict(symbol='square', size=10, color='#d62728')))
+                
             fig.update_layout(
-                title="Driving Force vs Grain Size",
-                xaxis_title="Grain Size d (μm)",
-                yaxis=dict(title="F_total (N)", titlefont=dict(color="#1f77b4"), tickfont=dict(color="#1f77b4")),
-                yaxis2=dict(title="dF_net (N)", titlefont=dict(color="#d62728"), tickfont=dict(color="#d62728"), overlaying="y", side="right"),
-                height=450, hovermode="x unified", showlegend=True
+                xaxis_title="Grain Size (μm)",
+                yaxis=dict(title="F_total (N)", side="left", titlefont=dict(color="#1f77b4"), tickfont=dict(color="#1f77b4")),
+                yaxis2=dict(title="dF_net (N)", side="right", overlaying="y", anchor="x", titlefont=dict(color="#d62728"), tickfont=dict(color="#d62728")),
+                height=450, hovermode="x unified"
             )
             st.session_state["plot_tab7"] = fig
-    if "plot_tab7" in st.session_state: st.plotly_chart(st.session_state["plot_tab7"], width="stretch")
+    if "plot_tab7" in st.session_state: st.plotly_chart(st.session_state["plot_tab7"], use_container_width=True)
 
 with tab8:
     st.markdown("### 📊 Sensitivity Analysis")
@@ -637,20 +589,20 @@ with tab8:
         
         g_sweep = np.linspace(0.3, 1.2, 50)
         p_net_g = [(res["delta_G_v"] - compute_capillary_pressure(g, r))/1e6 for g in g_sweep]
-        fig1 = go.Figure(go.Scatter(x=g_sweep, y=p_net_g, fill="tozeroy", line=dict(color="#d62728")))
+        fig1 = go.Figure(go.Scatter(x=g_sweep.tolist(), y=p_net_g, fill="tozeroy", line=dict(color="#d62728")))
         fig1.add_vline(x=gamma, line_dash="dash", line_color="black")
         fig1.update_layout(title="P_net vs γ", height=350)
         
         k_sweep = np.linspace(2.0, 4.0, 50)
         dF_k = [compute_differential_force(res["P_net"], compute_Sv(gs, k), dV) for k in k_sweep]
-        fig2 = go.Figure(go.Scatter(x=k_sweep, y=dF_k, fill="tozeroy", line=dict(color="#9467bd")))
+        fig2 = go.Figure(go.Scatter(x=k_sweep.tolist(), y=dF_k, fill="tozeroy", line=dict(color="#9467bd")))
         fig2.add_vline(x=shape_factor, line_dash="dash", line_color="black")
         fig2.update_layout(title="dF_net vs k", height=350)
         st.session_state["plot_tab8"] = (fig1, fig2)
     if "plot_tab8" in st.session_state:
         f1, f2 = st.session_state["plot_tab8"]
-        st.plotly_chart(f1, width="stretch")
-        st.plotly_chart(f2, width="stretch")
+        st.plotly_chart(f1, use_container_width=True)
+        st.plotly_chart(f2, use_container_width=True)
 
 # ================= FOOTER =================
 st.divider()
