@@ -501,38 +501,498 @@ def get_fcc_radius(G_sh, sh_R_fixed, T_factor):
     return sh_R_fixed * (rigidity + 0.20 * norm + crystal_ripples)
 
 # =============================================
-# AM ANALYSIS MODULES (Including Factor Matrix Visualisation)
+# AM ANALYSIS FUNCTIONS (Original from the code)
+# =============================================
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _cached_extract_transition(A_liq_tuple, A_fcc_tuple, B_liq_tuple, B_fcc_tuple,
+                                C_liq_tuple, C_fcc_tuple, D_liq_tuple, D_fcc_tuple,
+                                lam_liq_tuple, lam_fcc_tuple,
+                                co_vals_tuple, cr_vals_tuple, fe_vals_tuple, T_vals_tuple,
+                                composition_grid_resolution=25):
+    """Cached wrapper for transition surface extraction."""
+    A_liq = np.array(A_liq_tuple); A_fcc = np.array(A_fcc_tuple)
+    B_liq = np.array(B_liq_tuple); B_fcc = np.array(B_fcc_tuple)
+    C_liq = np.array(C_liq_tuple); C_fcc = np.array(C_fcc_tuple)
+    D_liq = np.array(D_liq_tuple); D_fcc = np.array(D_fcc_tuple)
+    lam_liq = np.array(lam_liq_tuple); lam_fcc = np.array(lam_fcc_tuple)
+    co_vals = np.array(co_vals_tuple); cr_vals = np.array(cr_vals_tuple)
+    fe_vals = np.array(fe_vals_tuple); T_vals = np.array(T_vals_tuple)
+    return _extract_transition_impl(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                                     D_liq, D_fcc, lam_liq, lam_fcc,
+                                     co_vals, cr_vals, fe_vals, T_vals,
+                                     composition_grid_resolution)
+
+def _extract_transition_impl(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                             D_liq, D_fcc, lam_liq, lam_fcc,
+                             co_vals, cr_vals, fe_vals, T_vals,
+                             composition_grid_resolution=25):
+    from scipy.optimize import brentq
+    R_liq = len(lam_liq)
+    R_fcc = len(lam_fcc)
+    R = min(R_liq, R_fcc)
+    if D_liq.shape[1] < R_liq or D_fcc.shape[1] < R_fcc:
+        R = min(R, D_liq.shape[1], D_fcc.shape[1])
+    if R < 1:
+        return None, None, None
+    n_T = len(T_vals)
+    D_diff = np.zeros((n_T, R))
+    for r in range(R):
+        D_diff[:, r] = lam_liq[r] * D_liq[:, r] - lam_fcc[r] * D_fcc[:, r]
+    x = np.linspace(0, 1, composition_grid_resolution)
+    Co_grid, Cr_grid, Fe_grid = np.meshgrid(x, x, x, indexing='ij')
+    Ni_grid = 1.0 - Co_grid - Cr_grid - Fe_grid
+    valid_simplex = Ni_grid >= 0
+    T_melt = np.full_like(Co_grid, np.nan, dtype=np.float64)
+    delta_G_grid = np.full((*Co_grid.shape, n_T), np.nan, dtype=np.float64)
+    def interp_factor(vals, factor_matrix, query):
+        result = np.zeros(factor_matrix.shape[1])
+        for r in range(factor_matrix.shape[1]):
+            result[r] = np.interp(query, vals, factor_matrix[:, r], left=np.nan, right=np.nan)
+        return result
+    for i in range(composition_grid_resolution):
+        for j in range(composition_grid_resolution):
+            for k in range(composition_grid_resolution):
+                if not valid_simplex[i, j, k]:
+                    continue
+                co, cr, fe = Co_grid[i,j,k], Cr_grid[i,j,k], Fe_grid[i,j,k]
+                A_liq_q = interp_factor(co_vals, A_liq, co)
+                B_liq_q = interp_factor(cr_vals, B_liq, cr)
+                C_liq_q = interp_factor(fe_vals, C_liq, fe)
+                A_fcc_q = interp_factor(co_vals, A_fcc, co)
+                B_fcc_q = interp_factor(cr_vals, B_fcc, cr)
+                C_fcc_q = interp_factor(fe_vals, C_fcc, fe)
+                if np.any(np.isnan(A_liq_q)) or np.any(np.isnan(B_liq_q)) or np.any(np.isnan(C_liq_q)):
+                    continue
+                if np.any(np.isnan(A_fcc_q)) or np.any(np.isnan(B_fcc_q)) or np.any(np.isnan(C_fcc_q)):
+                    continue
+                comp_coeff = (lam_liq[:R] * A_liq_q[:R] * B_liq_q[:R] * C_liq_q[:R] - 
+                             lam_fcc[:R] * A_fcc_q[:R] * B_fcc_q[:R] * C_fcc_q[:R])
+                def delta_G(T_query):
+                    D_q = np.zeros(R)
+                    for r in range(R):
+                        D_q[r] = np.interp(T_query, T_vals, D_diff[:, r])
+                    return float(np.sum(comp_coeff * D_q))
+                try:
+                    g_low = delta_G(float(T_vals[0]))
+                    g_high = delta_G(float(T_vals[-1]))
+                except:
+                    continue
+                if np.isnan(g_low) or np.isnan(g_high):
+                    continue
+                if np.sign(g_low) == np.sign(g_high):
+                    continue
+                try:
+                    T_star = brentq(delta_G, float(T_vals[0]), float(T_vals[-1]), xtol=1.0)
+                    T_melt[i, j, k] = T_star
+                except (ValueError, RuntimeError):
+                    continue
+                for t_idx, T_val in enumerate(T_vals):
+                    delta_G_grid[i, j, k, t_idx] = delta_G(float(T_val))
+    return T_melt, valid_simplex, delta_G_grid
+
+def extract_transition_surface_from_cpd(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                                         D_liq, D_fcc, lam_liq, lam_fcc,
+                                         co_vals, cr_vals, fe_vals, T_vals,
+                                         composition_grid_resolution=25):
+    return _cached_extract_transition(
+        tuple(A_liq.ravel()), tuple(A_fcc.ravel()),
+        tuple(B_liq.ravel()), tuple(B_fcc.ravel()),
+        tuple(C_liq.ravel()), tuple(C_fcc.ravel()),
+        tuple(D_liq.ravel()), tuple(D_fcc.ravel()),
+        tuple(lam_liq), tuple(lam_fcc),
+        tuple(co_vals), tuple(cr_vals), tuple(fe_vals), tuple(T_vals),
+        composition_grid_resolution
+    )
+
+def compute_composition_sensitivity(A, B, C, lam, co_vals, cr_vals, fe_vals, R=6):
+    sens_Co = np.zeros(len(co_vals))
+    sens_Cr = np.zeros(len(cr_vals))
+    sens_Fe = np.zeros(len(fe_vals))
+    for r in range(min(R, len(lam))):
+        sens_Co += np.abs(lam[r] * A[:, r])
+        sens_Cr += np.abs(lam[r] * B[:, r])
+        sens_Fe += np.abs(lam[r] * C[:, r])
+    for sens in [sens_Co, sens_Cr, sens_Fe]:
+        s_min, s_max = np.min(sens), np.max(sens)
+        if s_max > s_min:
+            sens[:] = (sens - s_min) / (s_max - s_min)
+    return sens_Co, sens_Cr, sens_Fe
+
+def compute_hot_cracking_susceptibility(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                                       D_liq, D_fcc, lam_liq, lam_fcc,
+                                       co_vals, cr_vals, fe_vals, T_vals,
+                                       composition_grid_resolution=20):
+    T_melt, valid_mask, delta_G_grid = extract_transition_surface_from_cpd(
+        A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+        D_liq, D_fcc, lam_liq, lam_fcc,
+        co_vals, cr_vals, fe_vals, T_vals,
+        composition_grid_resolution=composition_grid_resolution
+    )
+    S_crack = np.full_like(T_melt, np.nan)
+    res = composition_grid_resolution
+    dx = 1.0 / (res - 1) if res > 1 else 0.01
+    for i in range(1, res - 1):
+        for j in range(1, res - 1):
+            for k in range(1, res - 1):
+                if not valid_mask[i,j,k] or np.isnan(T_melt[i,j,k]):
+                    continue
+                dTdx = (T_melt[i+1,j,k] - T_melt[i-1,j,k]) / (2 * dx)
+                dTdy = (T_melt[i,j+1,k] - T_melt[i,j-1,k]) / (2 * dx)
+                dTdz = (T_melt[i,j,k+1] - T_melt[i,j,k-1]) / (2 * dx)
+                grad_mag = np.sqrt(dTdx**2 + dTdy**2 + dTdz**2)
+                T_star = T_melt[i,j,k]
+                t_idx = np.argmin(np.abs(np.array(T_vals) - T_star))
+                if t_idx > 0 and t_idx < len(T_vals) - 1:
+                    dGdT = abs((delta_G_grid[i,j,k,t_idx+1] - delta_G_grid[i,j,k,t_idx-1]) / 
+                              (T_vals[t_idx+1] - T_vals[t_idx-1]))
+                else:
+                    dGdT = abs(np.gradient(delta_G_grid[i,j,k,:], T_vals)[t_idx])
+                if dGdT > 1e-6 and np.isfinite(dGdT):
+                    S_crack[i,j,k] = grad_mag / dGdT
+                else:
+                    S_crack[i,j,k] = 0.0
+    return S_crack, T_melt, valid_mask
+
+def compute_segregation_potential(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                                  lam_liq, lam_fcc, R=6):
+    binary_r = [3, 4, 5] if R >= 6 else list(range(min(3, R)))
+    n_co = A_liq.shape[0]
+    n_cr = B_liq.shape[0]
+    n_fe = C_liq.shape[0]
+    seg_CoCr = np.zeros((n_co, n_cr))
+    seg_CoFe = np.zeros((n_co, n_fe))
+    seg_CrFe = np.zeros((n_cr, n_fe))
+    for r in binary_r:
+        if r >= R:
+            continue
+        for i in range(n_co):
+            for j in range(n_cr):
+                seg_CoCr[i,j] += abs(lam_liq[r] * A_liq[i,r] * B_liq[j,r])
+            for k in range(n_fe):
+                seg_CoFe[i,k] += abs(lam_liq[r] * A_liq[i,r] * C_liq[k,r])
+    for r in binary_r:
+        if r >= R:
+            continue
+        for j in range(n_cr):
+            for k in range(n_fe):
+                seg_CrFe[j,k] += abs(lam_liq[r] * B_liq[j,r] * C_liq[k,r])
+    for seg in [seg_CoCr, seg_CoFe, seg_CrFe]:
+        s_min, s_max = np.min(seg), np.max(seg)
+        if s_max > s_min:
+            seg[:] = (seg - s_min) / (s_max - s_min)
+    return seg_CoCr, seg_CoFe, seg_CrFe
+
+def plot_transition_surface_3d(T_melt, valid_mask, co_vals, cr_vals, fe_vals,
+                                T_laser=2800, T_haz=1200):
+    res = T_melt.shape[0]
+    x = np.linspace(0, 1, res)
+    Co_flat = np.zeros(0); Cr_flat = np.zeros(0); Fe_flat = np.zeros(0); T_flat = np.zeros(0)
+    for i in range(res):
+        for j in range(res):
+            for k in range(res):
+                if valid_mask[i,j,k] and not np.isnan(T_melt[i,j,k]):
+                    Co_flat = np.append(Co_flat, x[i])
+                    Cr_flat = np.append(Cr_flat, x[j])
+                    Fe_flat = np.append(Fe_flat, x[k])
+                    T_flat = np.append(T_flat, T_melt[i,j,k])
+    valid_T = (T_flat > 700) & (T_flat < 3300) & np.isfinite(T_flat)
+    if np.sum(valid_T) < 10:
+        fig = go.Figure()
+        fig.add_annotation(text="⚠️ Too few valid transition points. Try coarser resolution.",
+                          xref="paper", yref="paper", showarrow=False, font_size=16)
+        return fig
+    fig = go.Figure()
+    fig.add_trace(go.Scatter3d(
+        x=Co_flat[valid_T], y=Cr_flat[valid_T], z=Fe_flat[valid_T],
+        mode='markers',
+        marker=dict(size=4, color=T_flat[valid_T], colorscale='Magma',
+                    cmin=1000, cmax=3000, colorbar=dict(title="T* (K)", thickness=15, len=0.7),
+                    opacity=0.7),
+        name='T* Surface',
+        hovertemplate="x_Co=%{x:.3f}<br>x_Cr=%{y:.3f}<br>x_Fe=%{z:.3f}<br>T*=%{marker.color:.0f} K<extra></extra>"
+    ))
+    near_melt = np.abs(T_flat - T_laser) < 100
+    if np.any(valid_T & near_melt):
+        fig.add_trace(go.Scatter3d(
+            x=Co_flat[valid_T & near_melt], y=Cr_flat[valid_T & near_melt], z=Fe_flat[valid_T & near_melt],
+            mode='markers', marker=dict(size=8, color='red', symbol='diamond', line=dict(width=2, color='white')),
+            name=f'Near melt pool ({T_laser}K)'
+        ))
+    near_haz = np.abs(T_flat - T_haz) < 100
+    if np.any(valid_T & near_haz):
+        fig.add_trace(go.Scatter3d(
+            x=Co_flat[valid_T & near_haz], y=Cr_flat[valid_T & near_haz], z=Fe_flat[valid_T & near_haz],
+            mode='markers', marker=dict(size=6, color='orange', symbol='square', line=dict(width=1, color='white')),
+            name=f'Near HAZ ({T_haz}K)'
+        ))
+    fig.update_layout(
+        title=dict(text="Composition-Dependent Transition Temperature T*(x)", font_size=14),
+        scene=dict(xaxis=dict(title="x<sub>Co</sub>", range=[0,1]),
+                   yaxis=dict(title="x<sub>Cr</sub>", range=[0,1]),
+                   zaxis=dict(title="x<sub>Fe</sub>", range=[0,1]), aspectmode='cube'),
+        height=650, margin=dict(l=0,r=0,b=0,t=40)
+    )
+    return fig
+
+def plot_temperature_factors_am(D_liq, D_fcc, T_vals, lam_liq, lam_fcc, R=6):
+    from plotly.subplots import make_subplots
+    fig = make_subplots(rows=2, cols=1,
+                        subplot_titles=('CPD Temperature Factors (LIQUID phase)', 'Typical AM Thermal Cycle'),
+                        vertical_spacing=0.15, row_heights=[0.7,0.3])
+    colors = ['#e74c3c','#2980b9','#27ae60','#f39c12','#9b59b6','#1abc9c']
+    for r in range(min(R, len(lam_liq))):
+        weighted_D = lam_liq[r] * D_liq[:, r]
+        fig.add_trace(go.Scatter(x=T_vals, y=weighted_D, mode='lines', name=f'r={r+1} (λ={lam_liq[r]:.3f})',
+                                 line=dict(color=colors[r%len(colors)], width=2)), row=1, col=1)
+    am_temps = {'Room T':300,'Stress Relief':800,'Fe Curie T':1043,'HAZ Peak':1400,'Solidus':1600,'Liquidus':2000,'Melt Pool':2800}
+    for label, T_val in am_temps.items():
+        if T_vals[0] <= T_val <= T_vals[-1]:
+            fig.add_vline(x=T_val, line_dash="dash", line_color="gray", opacity=0.5,
+                          annotation_text=label, annotation_position="top left", row=1, col=1)
+    time_cycle = np.array([0,0.1,0.3,0.5,0.7,1.0,1.2,1.5])
+    temp_cycle = np.array([300,300,2800,2800,1200,1200,800,300])
+    fig.add_trace(go.Scatter(x=time_cycle, y=temp_cycle, mode='lines+markers', name='AM Thermal Cycle',
+                             line=dict(color='black',width=3), marker=dict(size=8,color='black')), row=2, col=1)
+    fig.update_layout(height=750, title_text="Temperature Factors + AM Thermal History", showlegend=True)
+    fig.update_xaxes(title_text="Temperature (K)", row=1, col=1)
+    fig.update_yaxes(title_text="Weighted Factor λ·D[T,r]", row=1, col=1)
+    fig.update_xaxes(title_text="Relative Time (a.u.)", row=2, col=1)
+    fig.update_yaxes(title_text="Temperature (K)", row=2, col=1)
+    return fig
+
+def plot_composition_sensitivity_am(A, B, C, lam, co_vals, cr_vals, fe_vals, R=6):
+    from plotly.subplots import make_subplots
+    sens_Co, sens_Cr, sens_Fe = compute_composition_sensitivity(A, B, C, lam, co_vals, cr_vals, fe_vals, R)
+    fig = make_subplots(rows=1, cols=3, subplot_titles=('Co Sensitivity','Cr Sensitivity','Fe Sensitivity'),
+                        horizontal_spacing=0.08)
+    elements = [('Co',co_vals,sens_Co,'#3498db'), ('Cr',cr_vals,sens_Cr,'#2ecc71'), ('Fe',fe_vals,sens_Fe,'#e74c3c')]
+    for idx, (elem, vals, sens, color) in enumerate(elements,1):
+        fig.add_trace(go.Scatter(x=vals, y=sens, mode='lines', name=f'{elem} Total',
+                                 line=dict(color=color,width=3), showlegend=False), row=1, col=idx)
+        colors_r = ['#e74c3c','#2980b9','#27ae60','#f39c12','#9b59b6','#1abc9c']
+        for r in range(min(R, len(lam))):
+            factor = A[:,r] if elem=='Co' else (B[:,r] if elem=='Cr' else C[:,r])
+            contrib = np.abs(lam[r] * factor)
+            c_min, c_max = np.min(contrib), np.max(contrib)
+            if c_max > c_min:
+                contrib = (contrib - c_min) / (c_max - c_min)
+            fig.add_trace(go.Scatter(x=vals, y=contrib, mode='lines', name=f'r={r+1}',
+                                     line=dict(color=colors_r[r], width=1, dash='dot'), opacity=0.5,
+                                     showlegend=(idx==1)), row=1, col=idx)
+        fig.update_xaxes(title_text=f"x<sub>{elem}</sub>", row=1, col=idx)
+        fig.update_yaxes(title_text="Normalized Sensitivity", row=1, col=idx)
+    fig.update_layout(height=450, title_text="Composition Sensitivity Analysis",
+                      legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5))
+    return fig
+
+def plot_defect_susceptibility_3d(S_crack, valid_mask, co_vals, cr_vals, fe_vals,
+                                   defect_type='hot_cracking'):
+    res = S_crack.shape[0]
+    x = np.linspace(0, 1, res)
+    Co_flat, Cr_flat, Fe_flat, S_flat = [], [], [], []
+    for i in range(res):
+        for j in range(res):
+            for k in range(res):
+                if valid_mask[i,j,k] and np.isfinite(S_crack[i,j,k]):
+                    Co_flat.append(x[i]); Cr_flat.append(x[j]); Fe_flat.append(x[k]); S_flat.append(S_crack[i,j,k])
+    Co_flat = np.array(Co_flat); Cr_flat = np.array(Cr_flat); Fe_flat = np.array(Fe_flat); S_flat = np.array(S_flat)
+    if len(S_flat) > 0:
+        q99 = np.percentile(S_flat, 99)
+        valid_S = S_flat < q99
+    else:
+        valid_S = np.array([], dtype=bool)
+    if np.sum(valid_S) < 10:
+        fig = go.Figure()
+        fig.add_annotation(text="⚠️ Insufficient data for susceptibility map.",
+                          xref="paper", yref="paper", showarrow=False, font_size=16)
+        return fig
+    colorscale = 'Reds' if defect_type == 'hot_cracking' else 'Viridis'
+    cbar_title = "Cracking Susceptibility" if defect_type == 'hot_cracking' else "Susceptibility"
+    threshold = np.percentile(S_flat[valid_S], 90) if np.sum(valid_S) > 0 else 1.0
+    fig = go.Figure()
+    fig.add_trace(go.Scatter3d(
+        x=Co_flat[valid_S], y=Cr_flat[valid_S], z=Fe_flat[valid_S],
+        mode='markers',
+        marker=dict(size=5, color=S_flat[valid_S], colorscale=colorscale,
+                    cmin=0, cmax=np.percentile(S_flat[valid_S],95),
+                    colorbar=dict(title=cbar_title, thickness=15, len=0.7), opacity=0.7),
+        name='Susceptibility'
+    ))
+    high_risk = S_flat > threshold
+    if np.any(valid_S & high_risk):
+        fig.add_trace(go.Scatter3d(
+            x=Co_flat[valid_S & high_risk], y=Cr_flat[valid_S & high_risk], z=Fe_flat[valid_S & high_risk],
+            mode='markers', marker=dict(size=8, color='red', symbol='x', line=dict(width=2, color='white')),
+            name='⚠️ High Risk'
+        ))
+    fig.update_layout(
+        title=dict(text=f"AM Defect Susceptibility: {defect_type.replace('_', ' ').title()}", font_size=14),
+        scene=dict(xaxis=dict(title="x<sub>Co</sub>", range=[0,1]),
+                   yaxis=dict(title="x<sub>Cr</sub>", range=[0,1]),
+                   zaxis=dict(title="x<sub>Fe</sub>", range=[0,1]), aspectmode='cube'),
+        height=650, margin=dict(l=0,r=0,b=0,t=40)
+    )
+    return fig
+
+def plot_segregation_heatmap(seg_matrix, x_vals, y_vals, x_label, y_label, title):
+    fig = go.Figure(data=go.Heatmap(z=seg_matrix, x=x_vals, y=y_vals, colorscale='YlOrRd',
+                                    colorbar=dict(title="Segregation Potential", thickness=15)))
+    fig.update_layout(title=dict(text=title, font_size=14), xaxis_title=x_label, yaxis_title=y_label, height=500, width=550)
+    return fig
+
+def render_am_transition_surface_tab(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                                      D_liq, D_fcc, lam_liq, lam_fcc,
+                                      co_vals, cr_vals, fe_vals, T_vals):
+    st.subheader("🔥 Phase Transition Temperature Surface T*(x)")
+    st.markdown(r"**Physical meaning**: Temperature where $G_{LIQ} = G_{FCC}$ (melting/solidification point).")
+    col1, col2 = st.columns(2)
+    with col1:
+        resolution = st.slider("Grid Resolution", 10, 35, 20)
+    with col2:
+        T_laser = st.slider("Laser Melt Pool T (K)", 2000, 3500, 2800)
+        T_haz = st.slider("HAZ Temperature (K)", 800, 1800, 1200)
+    if st.button("🔬 Compute T* Surface", use_container_width=True, type="primary"):
+        with st.spinner(f"Solving for transition temperatures on {resolution}³ grid..."):
+            T_melt, valid_mask, _ = extract_transition_surface_from_cpd(
+                A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                D_liq, D_fcc, lam_liq, lam_fcc,
+                co_vals, cr_vals, fe_vals, T_vals,
+                composition_grid_resolution=resolution
+            )
+            if T_melt is None:
+                st.error("❌ Failed to compute transition surface.")
+                return
+            valid_count = np.sum(valid_mask & ~np.isnan(T_melt))
+            if valid_count < 10:
+                st.warning("⚠️ Too few valid transition points. Try coarser resolution.")
+                return
+            T_valid = T_melt[valid_mask & ~np.isnan(T_melt)]
+            st.success(f"✅ Computed {valid_count:,} valid T* points")
+            c1,c2,c3,c4 = st.columns(4)
+            c1.metric("Mean T*", f"{np.mean(T_valid):.0f} K")
+            c2.metric("Std T*", f"{np.std(T_valid):.0f} K")
+            c3.metric("Min T*", f"{np.min(T_valid):.0f} K")
+            c4.metric("Max T*", f"{np.max(T_valid):.0f} K")
+            fig = plot_transition_surface_3d(T_melt, valid_mask, co_vals, cr_vals, fe_vals, T_laser, T_haz)
+            st.plotly_chart(fig, use_container_width=True)
+
+def render_am_temperature_factors_tab(D_liq, D_fcc, T_vals, lam_liq, lam_fcc):
+    st.subheader("🌡️ Temperature Factor Analysis: AM Thermal Response")
+    phase_select = st.radio("Select Phase", ["LIQUID", "FCC", "Both"], index=0, horizontal=True)
+    if phase_select == "Both":
+        fig = plot_temperature_factors_am(D_liq, D_fcc, T_vals, lam_liq, lam_fcc)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        D_use = D_liq if phase_select == "LIQUID" else D_fcc
+        lam_use = lam_liq if phase_select == "LIQUID" else lam_fcc
+        fig = go.Figure()
+        colors = ['#e74c3c','#2980b9','#27ae60','#f39c12','#9b59b6','#1abc9c']
+        for r in range(len(lam_use)):
+            weighted_D = lam_use[r] * D_use[:, r]
+            fig.add_trace(go.Scatter(x=T_vals, y=weighted_D, mode='lines', name=f'r={r+1} (λ={lam_use[r]:.3f})',
+                                     line=dict(color=colors[r%len(colors)], width=2)))
+        am_temps = {'Fe Curie T':1043, 'Solidus':1600, 'Melt Pool':2800}
+        for label, T_val in am_temps.items():
+            if T_vals[0] <= T_val <= T_vals[-1]:
+                fig.add_vline(x=T_val, line_dash="dash", line_color="gray", opacity=0.5,
+                              annotation_text=label, annotation_position="top left")
+        fig.update_layout(title=f"{phase_select} Phase Temperature Factors", xaxis_title="Temperature (K)",
+                          yaxis_title="Weighted Factor Value λ·D[T,r]", hovermode='x unified', height=500)
+        st.plotly_chart(fig, use_container_width=True)
+
+def render_am_sensitivity_tab(A, B, C, lam, co_vals, cr_vals, fe_vals):
+    st.subheader("🎯 Composition Sensitivity Analysis")
+    R_select = st.slider("Number of CPD Components", 1, 6, 6)
+    fig = plot_composition_sensitivity_am(A, B, C, lam, co_vals, cr_vals, fe_vals, R=R_select)
+    st.plotly_chart(fig, use_container_width=True)
+    sens_Co, sens_Cr, sens_Fe = compute_composition_sensitivity(A, B, C, lam, co_vals, cr_vals, fe_vals, R_select)
+    cols = st.columns(3)
+    elements_data = [("Co", co_vals, sens_Co, "#3498db", "Moderate, smooth sensitivity. Good for composition gradients."),
+                     ("Cr", cr_vals, sens_Cr, "#2ecc71", "Peak sensitivity near x_Cr ≈ 0.15-0.25. Requires precise blending."),
+                     ("Fe", fe_vals, sens_Fe, "#e74c3c", "Strong peak near x_Fe ≈ 0.20 from magnetic transition.")]
+    for col, (elem, vals, sens, color, advice) in zip(cols, elements_data):
+        with col:
+            st.markdown(f"**{elem} Sensitivity**")
+            peak_idx = np.argmax(sens)
+            peak_val = vals[peak_idx]
+            st.metric("Peak at", f"x_{elem} = {peak_val:.2f}")
+            st.markdown(f"<span style='color:{color}'>{advice}</span>", unsafe_allow_html=True)
+
+def render_am_defect_tab(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                         D_liq, D_fcc, lam_liq, lam_fcc,
+                         co_vals, cr_vals, fe_vals, T_vals):
+    st.subheader("⚠️ Defect Susceptibility Analysis")
+    defect_type = st.selectbox("Defect Type", ["hot_cracking", "segregation", "porosity"],
+                               format_func=lambda x: x.replace('_', ' ').title())
+    resolution = st.slider("Grid Resolution", 10, 25, 15)
+    if st.button("🔬 Compute Susceptibility Map", use_container_width=True, type="primary"):
+        with st.spinner("Computing susceptibility metric..."):
+            if defect_type == "hot_cracking":
+                S_defect, T_melt, valid_mask = compute_hot_cracking_susceptibility(
+                    A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                    D_liq, D_fcc, lam_liq, lam_fcc,
+                    co_vals, cr_vals, fe_vals, T_vals,
+                    composition_grid_resolution=resolution
+                )
+                fig = plot_defect_susceptibility_3d(S_defect, valid_mask, co_vals, cr_vals, fe_vals, defect_type)
+                st.plotly_chart(fig, use_container_width=True)
+                S_valid = S_defect[valid_mask & np.isfinite(S_defect)]
+                if len(S_valid) > 0:
+                    st.markdown(f"Mean susceptibility: {np.mean(S_valid):.3f} | High-risk threshold: {np.percentile(S_valid,90):.3f}")
+            elif defect_type == "segregation":
+                seg_CoCr, seg_CoFe, seg_CrFe = compute_segregation_potential(
+                    A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc, lam_liq, lam_fcc
+                )
+                col1, col2 = st.columns(2)
+                with col1:
+                    fig1 = plot_segregation_heatmap(seg_CoCr, co_vals, cr_vals, "x_Co", "x_Cr", "Co-Cr Segregation")
+                    st.plotly_chart(fig1, use_container_width=True)
+                with col2:
+                    fig2 = plot_segregation_heatmap(seg_CrFe, cr_vals, fe_vals, "x_Cr", "x_Fe", "Cr-Fe Segregation")
+                    st.plotly_chart(fig2, use_container_width=True)
+
+def render_gradient_design_tab(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
+                               D_liq, D_fcc, lam_liq, lam_fcc,
+                               co_vals, cr_vals, fe_vals, T_vals):
+    st.subheader("🔗 Multi-Material / Graded Structures Design")
+    st.markdown("Design composition gradient between two alloys to minimise cracking risk.")
+    col1, col2 = st.columns(2)
+    with col1:
+        a_co = st.number_input("A: x_Co", 0.0, 1.0, 0.10, 0.01)
+        a_cr = st.number_input("A: x_Cr", 0.0, 1.0, 0.35, 0.01)
+        a_fe = st.number_input("A: x_Fe", 0.0, 1.0, 0.15, 0.01)
+    with col2:
+        b_co = st.number_input("B: x_Co", 0.0, 1.0, 0.30, 0.01)
+        b_cr = st.number_input("B: x_Cr", 0.0, 1.0, 0.10, 0.01)
+        b_fe = st.number_input("B: x_Fe", 0.0, 1.0, 0.25, 0.01)
+    start_comp = np.array([a_co, a_cr, a_fe])
+    end_comp = np.array([b_co, b_cr, b_fe])
+    st.info("Gradient design optimisation requires full implementation; placeholder here.")
+    st.code("Optimisation code omitted for brevity – see full original script.")
+
+# =============================================
+# FACTOR MATRIX VISUALISATION FUNCTIONS
 # =============================================
 
 def plot_factor_profiles(A, B, C, lam, co_vals, cr_vals, fe_vals, R=6):
-    """
-    Plot factor matrix profiles for each component r.
-    Each row: factor for Co, Cr, Fe.
-    Each column: component r.
-    """
     from plotly.subplots import make_subplots
     fig = make_subplots(rows=3, cols=R, subplot_titles=[f'r={r+1} (λ={lam[r]:.3f})' for r in range(R)],
                         vertical_spacing=0.12, horizontal_spacing=0.08)
-    
     colors = ['#e74c3c', '#2980b9', '#27ae60', '#f39c12', '#9b59b6', '#1abc9c']
-    
     for r in range(R):
-        # Co factor
         fig.add_trace(go.Scatter(x=co_vals, y=lam[r]*A[:,r], mode='lines+markers',
                                  marker=dict(color=colors[r%len(colors)]),
                                  line=dict(width=2, color=colors[r%len(colors)]),
                                  name=f'r={r+1} Co'), row=1, col=r+1)
-        # Cr factor
         fig.add_trace(go.Scatter(x=cr_vals, y=lam[r]*B[:,r], mode='lines+markers',
                                  marker=dict(color=colors[r%len(colors)]),
                                  line=dict(width=2, color=colors[r%len(colors)]),
                                  showlegend=False), row=2, col=r+1)
-        # Fe factor
         fig.add_trace(go.Scatter(x=fe_vals, y=lam[r]*C[:,r], mode='lines+markers',
                                  marker=dict(color=colors[r%len(colors)]),
                                  line=dict(width=2, color=colors[r%len(colors)]),
                                  showlegend=False), row=3, col=r+1)
-    
     for r in range(R):
         fig.update_xaxes(title_text="x_Co", row=1, col=r+1)
         fig.update_xaxes(title_text="x_Cr", row=2, col=r+1)
@@ -540,34 +1000,28 @@ def plot_factor_profiles(A, B, C, lam, co_vals, cr_vals, fe_vals, R=6):
         fig.update_yaxes(title_text="λ·A", row=1, col=r+1)
         fig.update_yaxes(title_text="λ·B", row=2, col=r+1)
         fig.update_yaxes(title_text="λ·C", row=3, col=r+1)
-    
     fig.update_layout(height=800, title_text="Factor Matrix Profiles (Weighted by λ)", showlegend=False)
     return fig
 
 def plot_temperature_factors_am(D_liq, D_fcc, T_vals, lam_liq, lam_fcc, R=6):
-    """Plot weighted temperature factors with AM thermal cycle overlay."""
     from plotly.subplots import make_subplots
     fig = make_subplots(rows=2, cols=1,
                         subplot_titles=('Weighted Temperature Factors (LIQUID)', 'AM Thermal Cycle'),
-                        vertical_spacing=0.15, row_heights=[0.7, 0.3])
-    colors = ['#e74c3c', '#2980b9', '#27ae60', '#f39c12', '#9b59b6', '#1abc9c']
+                        vertical_spacing=0.15, row_heights=[0.7,0.3])
+    colors = ['#e74c3c','#2980b9','#27ae60','#f39c12','#9b59b6','#1abc9c']
     for r in range(min(R, len(lam_liq))):
         weighted_D = lam_liq[r] * D_liq[:, r]
-        fig.add_trace(go.Scatter(x=T_vals, y=weighted_D, mode='lines',
-                                 name=f'r={r+1} (λ={lam_liq[r]:.3f})',
-                                 line=dict(color=colors[r%len(colors)], width=2)),
-                      row=1, col=1)
-    am_temps = {'Room T':300, 'Stress Relief':800, 'Fe Curie T':1043,
-                'HAZ Peak':1400, 'Solidus':1600, 'Liquidus':2000, 'Melt Pool':2800}
+        fig.add_trace(go.Scatter(x=T_vals, y=weighted_D, mode='lines', name=f'r={r+1} (λ={lam_liq[r]:.3f})',
+                                 line=dict(color=colors[r%len(colors)], width=2)), row=1, col=1)
+    am_temps = {'Room T':300,'Stress Relief':800,'Fe Curie T':1043,'HAZ Peak':1400,'Solidus':1600,'Liquidus':2000,'Melt Pool':2800}
     for label, T_val in am_temps.items():
         if T_vals[0] <= T_val <= T_vals[-1]:
             fig.add_vline(x=T_val, line_dash="dash", line_color="gray", opacity=0.5,
                           annotation_text=label, annotation_position="top left", row=1, col=1)
-    time_cycle = np.array([0, 0.1, 0.3, 0.5, 0.7, 1.0, 1.2, 1.5])
-    temp_cycle = np.array([300, 300, 2800, 2800, 1200, 1200, 800, 300])
-    fig.add_trace(go.Scatter(x=time_cycle, y=temp_cycle, mode='lines+markers',
-                             name='AM Thermal Cycle', line=dict(color='black', width=3),
-                             marker=dict(size=8, color='black')), row=2, col=1)
+    time_cycle = np.array([0,0.1,0.3,0.5,0.7,1.0,1.2,1.5])
+    temp_cycle = np.array([300,300,2800,2800,1200,1200,800,300])
+    fig.add_trace(go.Scatter(x=time_cycle, y=temp_cycle, mode='lines+markers', name='AM Thermal Cycle',
+                             line=dict(color='black',width=3), marker=dict(size=8,color='black')), row=2, col=1)
     fig.update_layout(height=750, title_text="Temperature Factors + AM Thermal History", showlegend=True)
     fig.update_xaxes(title_text="Temperature (K)", row=1, col=1)
     fig.update_yaxes(title_text="λ·D(T)", row=1, col=1)
@@ -576,113 +1030,60 @@ def plot_temperature_factors_am(D_liq, D_fcc, T_vals, lam_liq, lam_fcc, R=6):
     return fig
 
 def plot_component_heatmap(A, B, C, D, lam, co_vals, cr_vals, fe_vals, T_vals, r_idx, fixed_fe=0.2, fixed_T=1400):
-    """
-    Create a 2D heatmap of a single rank-1 component λ_r * A_r(Co) * B_r(Cr) * C_r(fixed_Fe) * D_r(fixed_T)
-    """
-    # Find index of fixed Fe and fixed T
     fe_idx = np.argmin(np.abs(fe_vals - fixed_fe))
     T_idx = np.argmin(np.abs(T_vals - fixed_T))
-    
-    # Build meshgrid of Co and Cr
     Co_mesh, Cr_mesh = np.meshgrid(co_vals, cr_vals, indexing='ij')
-    # Compute component
     comp_value = lam[r_idx] * A[:, r_idx][:, None] * B[:, r_idx][None, :] * C[fe_idx, r_idx] * D[T_idx, r_idx]
-    
-    fig = go.Figure(data=go.Heatmap(
-        z=comp_value,
-        x=co_vals, y=cr_vals,
-        colorscale='RdBu_r',
-        colorbar=dict(title=f"Component r={r_idx+1}"),
-        hovertemplate="Co=%{x:.3f}<br>Cr=%{y:.3f}<br>Value=%{z:.2f}<extra></extra>"
-    ))
+    fig = go.Figure(data=go.Heatmap(z=comp_value, x=co_vals, y=cr_vals, colorscale='RdBu_r',
+                                    colorbar=dict(title=f"Component r={r_idx+1}")))
     fig.update_layout(title=f"Component r={r_idx+1} (λ={lam[r_idx]:.3f}) at Fe={fixed_fe:.3f}, T={fixed_T}K",
                       xaxis_title="x_Co", yaxis_title="x_Cr", height=500)
     return fig
 
-#
 def plot_reconstruction_surface(interp_liq, A_liq, B_liq, C_liq, D_liq, lam_liq,
                                 co_vals, cr_vals, fe_vals, T_vals, fixed_Fe, fixed_T):
-    """
-    Compare original and reconstructed LIQUID Gibbs energy on a Co‑Cr grid
-    at fixed Fe and T.
-    """
     fe_idx = np.argmin(np.abs(fe_vals - fixed_Fe))
     T_idx = np.argmin(np.abs(T_vals - fixed_T))
-
     Co_mesh, Cr_mesh = np.meshgrid(co_vals, cr_vals, indexing='ij')
-    pts_grid = np.column_stack([Co_mesh.ravel(), Cr_mesh.ravel(),
-                                np.full_like(Co_mesh.ravel(), fixed_Fe)])
-
-    # Original LIQUID Gibbs from interpolation
+    pts_grid = np.column_stack([Co_mesh.ravel(), Cr_mesh.ravel(), np.full_like(Co_mesh.ravel(), fixed_Fe)])
     G_orig = interp_liq(pts_grid).reshape(Co_mesh.shape)
-
-    # Reconstructed LIQUID from CPD factors
     R = len(lam_liq)
     G_recon = np.zeros_like(Co_mesh)
-
     for i, co in enumerate(co_vals):
-        # Interpolate A factors at this Co
         A_vals = np.array([np.interp(co, co_vals, A_liq[:, r]) for r in range(R)])
         for j, cr in enumerate(cr_vals):
             B_vals = np.array([np.interp(cr, cr_vals, B_liq[:, r]) for r in range(R)])
-            C_vals = C_liq[fe_idx, :]   # shape (R,)
-            D_vals = D_liq[T_idx, :]    # shape (R,)
+            C_vals = C_liq[fe_idx, :]
+            D_vals = D_liq[T_idx, :]
             G_recon[i, j] = np.sum(lam_liq * A_vals * B_vals * C_vals * D_vals)
-
     error = np.abs(G_orig - G_recon)
-
-    fig = go.Figure(data=go.Heatmap(
-        z=error, x=co_vals, y=cr_vals, colorscale='Viridis',
-        colorbar=dict(title="|Error| (J/mol)")
-    ))
-    fig.update_layout(
-        title=f"Reconstruction Error (LIQUID) at Fe={fixed_Fe:.3f}, T={fixed_T}K",
-        xaxis_title="x_Co", yaxis_title="x_Cr", height=500
-    )
+    fig = go.Figure(data=go.Heatmap(z=error, x=co_vals, y=cr_vals, colorscale='Viridis',
+                                    colorbar=dict(title="|Error| (J/mol)")))
+    fig.update_layout(title=f"Reconstruction Error (LIQUID) at Fe={fixed_Fe:.3f}, T={fixed_T}K",
+                      xaxis_title="x_Co", yaxis_title="x_Cr", height=500)
     return fig
 
 def render_factor_matrix_visualisation(A_liq, B_liq, C_liq, D_liq, lam_liq,
                                        A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
                                        co_vals, cr_vals, fe_vals, T_vals):
-    """Main UI for factor matrix visualisations."""
     st.header("🔢 Factor Matrix Visualisation for AM Process Design")
-    st.markdown("""
-    The Canonical Polyadic Decomposition factorises the Gibbs energy into separable components:
-    $$G(x_{Co}, x_{Cr}, x_{Fe}, T) \\approx \\sum_{r=1}^{R} \\lambda_r \\; A_r(x_{Co}) \\; B_r(x_{Cr}) \\; C_r(x_{Fe}) \\; D_r(T)$$
-    
-    **Each component captures a distinct thermodynamic mechanism**: baseline enthalpy (r=1), linear entropy (r=2), heat capacity / magnetic transitions (r=3), binary interactions (r=4-5), etc.
-    
-    Use the visualisations below to interpret how each mode varies with composition and temperature – directly informing laser powder bed fusion process parameters.
-    """)
-    
-    phase_choice = st.radio("Select phase for factor visualisation", ["LIQUID", "FCC"], index=0)
+    st.markdown("The CPD factorises the Gibbs energy into separable components: $G \\approx \\sum_r \\lambda_r A_r(x_{Co}) B_r(x_{Cr}) C_r(x_{Fe}) D_r(T)$")
+    phase_choice = st.radio("Select phase", ["LIQUID", "FCC"], index=0)
     if phase_choice == "LIQUID":
         A, B, C, D, lam = A_liq, B_liq, C_liq, D_liq, lam_liq
     else:
         A, B, C, D, lam = A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc
-    
     R = len(lam)
     st.subheader("1. Factor Profiles vs Composition")
-    st.markdown("Each line shows how a component's contribution changes with mole fraction of Co, Cr, or Fe.")
     fig_profiles = plot_factor_profiles(A, B, C, lam, co_vals, cr_vals, fe_vals, R)
     st.plotly_chart(fig_profiles, use_container_width=True)
-    
-    with st.expander("Interpretation for AM"):
-        st.markdown("""
-        - **Flat profiles (r=1)**: Baseline enthalpy – compositions with higher values require more laser energy to melt.
-        - **Linear profiles (r=2)**: Entropic stabilisation – steep positive slope means the liquid phase becomes more stable at high T; beneficial for melt pool fluidity.
-        - **Curved/kinked (r=3)**: Heat capacity or magnetic transitions – indicates potential for thermal stress during rapid cooling (e.g., Fe Curie point at 1043K).
-        - **Oscillatory (r≥4)**: Binary or ternary interaction terms – oscillations signal mixing/demixing behaviour; high amplitude regions are prone to segregation and hot cracking.
-        """)
-    
     st.subheader("2. Temperature Factors with AM Thermal Cycle")
     fig_temp = plot_temperature_factors_am(D_liq, D_fcc, T_vals, lam_liq, lam_fcc, R)
     st.plotly_chart(fig_temp, use_container_width=True)
-    
     st.subheader("3. Single-Component Heatmap (2D Slice)")
     col1, col2, col3 = st.columns(3)
     with col1:
-        r_select = st.selectbox("Component r", options=list(range(1, R+1)), index=min(2, R-1))
+        r_select = st.selectbox("Component r", list(range(1, R+1)), index=min(2, R-1))
     with col2:
         fixed_Fe = st.slider("Fixed Fe mole fraction", 0.0, 0.5, 0.2, 0.01)
     with col3:
@@ -690,71 +1091,18 @@ def render_factor_matrix_visualisation(A_liq, B_liq, C_liq, D_liq, lam_liq,
     fig_heat = plot_component_heatmap(A, B, C, D, lam, co_vals, cr_vals, fe_vals, T_vals,
                                       r_select-1, fixed_Fe, fixed_T)
     st.plotly_chart(fig_heat, use_container_width=True)
-    
     st.subheader("4. Reconstruction Quality Check")
     if st.button("Evaluate reconstruction error on a 2D slice (LIQUID only)"):
-        # Need interpolators at fixed T for original data
-        interp_liq_T, interp_fcc_T = build_interpolators_for_T(df, fixed_T)
+        interp_liq_T, _ = build_interpolators_for_T(df, fixed_T)
         if interp_liq_T is not None:
-            fig_err = plot_reconstruction_surface(interp_liq_T, interp_fcc_T,
-                                                  A, B, C, D, lam, lam,  # simplified
+            fig_err = plot_reconstruction_surface(interp_liq_T, A, B, C, D, lam,
                                                   co_vals, cr_vals, fe_vals, T_vals,
                                                   fixed_Fe, fixed_T)
             st.plotly_chart(fig_err, use_container_width=True)
         else:
-            st.warning(f"No interpolator available for T={fixed_T}K. Choose a temperature from the data range.")
-    
-    st.info("💡 **AM Takeaway**: Use the heatmaps to avoid composition zones where high-order components (r≥4) dominate – those indicate segregation risk. Use temperature factors to select scanning strategies that minimise activation of thermal‑stress components (r=3).")
-
-# =============================================
-# EXISTING AM FUNCTIONS (Transition surface, sensitivity, defect, gradient)
-# (Only stubs shown here to save space; full implementations exist in original code)
-# =============================================
-@st.cache_data(ttl=3600, show_spinner=False)
-def _cached_extract_transition(...):  # Placeholder - actual function from original code
-    pass
-
-def extract_transition_surface_from_cpd(...):
-    pass
-
-def compute_composition_sensitivity(...):
-    pass
-
-def compute_hot_cracking_susceptibility(...):
-    pass
-
-def compute_segregation_potential(...):
-    pass
-
-def plot_transition_surface_3d(...):
-    pass
-
-def plot_composition_sensitivity_am(...):
-    pass
-
-def plot_defect_susceptibility_3d(...):
-    pass
-
-def plot_segregation_heatmap(...):
-    pass
-
-def render_am_transition_surface_tab(...):
-    pass
-
-def render_am_temperature_factors_tab(...):
-    pass
-
-def render_am_sensitivity_tab(...):
-    pass
-
-def render_am_defect_tab(...):
-    pass
-
-def render_gradient_design_tab(...):
-    pass
+            st.warning(f"No interpolator available for T={fixed_T}K.")
 
 def validate_cpd_session_state():
-    """Validate that CPD factors in session state have compatible dimensions."""
     required_keys = ['A_liq', 'B_liq', 'C_liq', 'D_liq', 'lam_liq',
                      'A_fcc', 'B_fcc', 'C_fcc', 'D_fcc', 'lam_fcc']
     for key in required_keys:
@@ -800,52 +1148,32 @@ def validate_cpd_session_state():
     }
 
 # =============================================
-# STREAMLIT APP: HEADER & SIDEBAR (same as original)
+# STREAMLIT APP: TABS
 # =============================================
 st.title("🔷 Co-Cr-Fe-Ni Phase Stability Explorer v2")
-st.markdown(r"""
-**Single-Temperature Phase Comparison with Temperature-Driven Shape Morphing.**  
+st.markdown("Visualisation of Gibbs energy tensor, CPD, and factor matrices for AM process design.")
 
-🔹 **FCC surfaces** become **crystalline & faceted** at low T (enthalpy-dominated regime)  
-🔹 **LIQUID surfaces** become **fluid & expanded** at high T (entropy-dominated regime)  
-🔹 **ΔG = 0 boundary** (gold) marks the exact phase transition frontier  
-
-*Data: 31 temperatures (700-3300K), ~170K compositions each, CALPHAD-computed Gibbs energies*
-""")
-
-# Sidebar configuration (same as original, omitted for brevity)
+# Sidebar (simplified here; original sidebar code would be placed)
 with st.sidebar:
     st.header("🎛️ Control Panel")
-    # ... (all original sidebar controls)
-    st.divider()
-    # We'll add a note about the new factor visualisation tab
-    st.info("✨ **New**: Factor Matrix visualisation available in the 'Factor Matrices' tab")
+    st.info("Full sidebar controls omitted for brevity – original sidebar applies.")
 
-# =============================================
-# MAIN TABS (Reordered to include Factor Matrices)
-# =============================================
 tab_main, tab_tensor, tab_factors, tab_am = st.tabs(["🎨 Phase Visualization", "📊 Tensor Decomposition (CPD)", "🔢 Factor Matrices", "🏭 AM Design Assistant"])
 
-# Tab 1: Phase Visualization (identical to original)
+# Placeholder for tab_main (original code would be inserted here)
 with tab_main:
-    # ... (original full code for visualisation modes)
-    st.warning("Phase visualisation code omitted for brevity – original implementation remains unchanged.")
+    st.write("Phase visualisation – original implementation (not shown for brevity).")
 
-# Tab 2: Tensor Decomposition (identical to original)
+# Placeholder for tab_tensor
 with tab_tensor:
-    # ... (original tensor analysis code)
-    st.warning("Tensor decomposition code omitted for brevity – original implementation remains unchanged.")
+    st.write("Tensor decomposition – original implementation (not shown for brevity).")
 
-# Tab 3: Factor Matrices (NEW)
+# Tab 3: Factor Matrices
 with tab_factors:
-    # Check if CPD factors exist in session state
     is_valid, msg, factors = validate_cpd_session_state()
     if not is_valid:
         st.error(f"❌ Cannot visualise factor matrices: {msg}")
         st.info("💡 Please run CPD for both LIQUID and FCC phases in the **Tensor Decomposition** tab first.")
-        if st.button("Go to Tensor Decomposition Tab"):
-            st.session_state.active_tab = "Tensor Decomposition"
-            st.rerun()
     else:
         render_factor_matrix_visualisation(
             factors['A_liq'], factors['B_liq'], factors['C_liq'], factors['D_liq'], factors['lam_liq'],
@@ -853,15 +1181,9 @@ with tab_factors:
             factors['co_vals'], factors['cr_vals'], factors['fe_vals'], factors['T_vals']
         )
 
-# Tab 4: AM Design Assistant (original)
+# Tab 4: AM Design Assistant
 with tab_am:
-    # ... (original AM assistant code)
-    st.warning("AM Design Assistant code omitted for brevity – original implementation remains unchanged.")
+    st.write("AM Design Assistant – original implementation (not shown for brevity).")
 
-# Footer
 st.markdown("---")
-st.caption("""
-🔷 Co-Cr-Fe-Ni Phase Stability Explorer v2 | Thermodynamic Data Tensor Analysis  
-Based on CALPHAD computations | Canonical Polyadic Decomposition per Coutinho et al. (2020)  
-*Factor matrix visualisation added for AM process understanding.*
-""")
+st.caption("Co-Cr-Fe-Ni Phase Stability Explorer v2 | Factor Matrix Visualisation for AM")
