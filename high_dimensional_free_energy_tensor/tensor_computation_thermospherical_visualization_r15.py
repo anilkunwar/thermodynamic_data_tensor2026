@@ -1991,7 +1991,7 @@ def render_factor_matrix_visualisation(A_liq, B_liq, C_liq, D_liq, lam_liq,
         co_vals, cr_vals, fe_vals, T_vals,
         phase=phase_choice, R=min(len(lam_liq), len(lam_fcc))
     )
-    st.plotly_chart(fig_unified, use_container_width=True)
+    st.plotly_chart(fig_unified, use_container_width=True, key="plotly_unified_main")
 
     st.info("""
     **Reading the unified figure:**
@@ -2015,7 +2015,7 @@ def render_factor_matrix_visualisation(A_liq, B_liq, C_liq, D_liq, lam_liq,
                 A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
                 co_vals, cr_vals, fe_vals, T_vals, phase='LIQUID', R=R
             )
-            st.plotly_chart(fig_liq, use_container_width=True)
+            st.plotly_chart(fig_liq, use_container_width=True, key="plotly_liq_compare")
         with col2:
             st.markdown("**FCC**")
             fig_fcc = plot_unified_factor_matrices(
@@ -2023,12 +2023,12 @@ def render_factor_matrix_visualisation(A_liq, B_liq, C_liq, D_liq, lam_liq,
                 A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
                 co_vals, cr_vals, fe_vals, T_vals, phase='FCC', R=R
             )
-            st.plotly_chart(fig_fcc, use_container_width=True)
+            st.plotly_chart(fig_fcc, use_container_width=True, key="plotly_fcc_compare")
 
     # --- TEMPERATURE FACTORS WITH AM CYCLE ---
     st.subheader("🔥 Temperature Factors + AM Thermal Cycle")
     fig_temp = plot_temperature_factors_am(D_liq, D_fcc, T_vals, lam_liq, lam_fcc, R=min(len(lam_liq), len(lam_fcc)))
-    st.plotly_chart(fig_temp, use_container_width=True)
+    st.plotly_chart(fig_temp, use_container_width=True, key="plotly_temp_am_cycle")
 
     # --- SINGLE-COMPONENT HEATMAP ---
     st.subheader("🗺️ Single-Component Spatial Heatmap (2D Slice)")
@@ -2043,17 +2043,17 @@ def render_factor_matrix_visualisation(A_liq, B_liq, C_liq, D_liq, lam_liq,
     with col1:
         r_select = st.selectbox("Component r", list(range(1, R+1)), index=min(2, R-1), key="comp_r")
     with col2:
+        fe_step = float(fe_vals[1]-fe_vals[0]) if len(fe_vals)>1 else 0.01
         fixed_Fe = st.slider("Fixed Fe", float(fe_vals.min()), float(fe_vals.max()), 
-                            float(np.median(fe_vals)), float(fe_vals[1]-fe_vals[0]) if len(fe_vals)>1 else 0.01,
-                            key="fixed_fe")
+                            float(np.median(fe_vals)), fe_step, key="fixed_fe")
     with col3:
+        T_step = float(T_vals[1]-T_vals[0]) if len(T_vals)>1 else 100.0
         fixed_T = st.slider("Fixed T (K)", float(T_vals.min()), float(T_vals.max()),
-                           float(T_vals[len(T_vals)//2]), float(T_vals[1]-T_vals[0]) if len(T_vals)>1 else 100.0,
-                           key="fixed_T_heat")
+                           float(T_vals[len(T_vals)//2]), T_step, key="fixed_T_heat")
 
     fig_heat = plot_component_heatmap(A, B, C, D, lam, co_vals, cr_vals, fe_vals, T_vals,
                                       r_select-1, fixed_Fe, fixed_T)
-    st.plotly_chart(fig_heat, use_container_width=True)
+    st.plotly_chart(fig_heat, use_container_width=True, key="plotly_single_component")
 
     # --- RECONSTRUCTION QUALITY ---
     st.subheader("✅ Reconstruction Quality Check")
@@ -2062,9 +2062,10 @@ def render_factor_matrix_visualisation(A_liq, B_liq, C_liq, D_liq, lam_liq,
         if interp_liq_T is not None:
             fig_err = plot_reconstruction_surface(interp_liq_T, A_liq, B_liq, C_liq, D_liq, lam_liq,
                                                   co_vals, cr_vals, fe_vals, T_vals, fixed_Fe, fixed_T)
-            st.plotly_chart(fig_err, use_container_width=True)
+            st.plotly_chart(fig_err, use_container_width=True, key="plotly_recon_error")
         else:
             st.warning(f"No interpolator for T={fixed_T}K.")
+
 def render_am_transition_surface_tab(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
                                       D_liq, D_fcc, lam_liq, lam_fcc,
                                       co_vals, cr_vals, fe_vals, T_vals):
@@ -2131,7 +2132,7 @@ def render_am_transition_surface_tab(A_liq, A_fcc, B_liq, B_fcc, C_liq, C_fcc,
             # 3D plot
             fig = plot_transition_surface_3d(T_melt, valid_mask, co_vals, cr_vals, fe_vals,
                                               T_laser=T_laser, T_haz=T_haz)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, key="plotly_007")
 
             # Composition recommendations
             with st.expander("💡 AM Process Recommendations from T* Surface", expanded=True):
@@ -2172,7 +2173,7 @@ def render_am_temperature_factors_tab(D_liq, D_fcc, T_vals, lam_liq, lam_fcc):
 
     if phase_select == "Both":
         fig = plot_temperature_factors_am(D_liq, D_fcc, T_vals, lam_liq, lam_fcc, R=len(lam_liq))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="plotly_008")
     else:
         D_use = D_liq if phase_select == "LIQUID" else D_fcc
         lam_use = lam_liq if phase_select == "LIQUID" else lam_fcc
@@ -2208,7 +2209,7 @@ def render_am_temperature_factors_tab(D_liq, D_fcc, T_vals, lam_liq, lam_fcc):
             height=500
         )
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="plotly_009")
 
     with st.expander("📖 How to Interpret for AM Process Design"):
         st.markdown("""
@@ -2244,7 +2245,7 @@ def render_am_sensitivity_tab(A, B, C, lam, co_vals, cr_vals, fe_vals):
     R_select = st.slider("Number of CPD Components", 1, 6, 6)
 
     fig = plot_composition_sensitivity_am(A, B, C, lam, co_vals, cr_vals, fe_vals, R=R_select)
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key="plotly_010")
 
     # Detailed element analysis
     st.subheader("Element-Specific Recommendations")
@@ -2309,7 +2310,7 @@ abla_x T^*(x)| 	imes |d(\Delta G)/dT|^{-1}_{T=T^*}$$
 
                 fig = plot_defect_susceptibility_3d(S_defect, valid_mask, co_vals, cr_vals, fe_vals,
                                                       defect_type=defect_type)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, key="plotly_011")
 
                 # Statistics
                 S_valid = S_defect[valid_mask & np.isfinite(S_defect)]
@@ -2340,11 +2341,11 @@ abla_x T^*(x)| 	imes |d(\Delta G)/dT|^{-1}_{T=T^*}$$
                 with col1:
                     fig1 = plot_segregation_heatmap(seg_CoCr, co_vals, cr_vals, 
                                                     "x_Co", "x_Cr", "Co-Cr Segregation")
-                    st.plotly_chart(fig1, use_container_width=True)
+                    st.plotly_chart(fig1, use_container_width=True, key="plotly_012")
                 with col2:
                     fig2 = plot_segregation_heatmap(seg_CrFe, cr_vals, fe_vals,
                                                     "x_Cr", "x_Fe", "Cr-Fe Segregation")
-                    st.plotly_chart(fig2, use_container_width=True)
+                    st.plotly_chart(fig2, use_container_width=True, key="plotly_013")
 
                 st.info("""
                 **Segregation Analysis:**
@@ -3322,7 +3323,7 @@ with tab_main:
     )
     
     try:
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, key="plotly_014")
     except Exception as e:
         st.error(f"❌ Render error: {e}")
 
@@ -3434,7 +3435,7 @@ with tab_tensor:
                 height=500
             )
             
-            st.plotly_chart(fig_svd, use_container_width=True)
+            st.plotly_chart(fig_svd, use_container_width=True, key="plotly_015")
             
             # Rank interpretation with real data context
             max_cp_rank = max(ranks)
@@ -3491,7 +3492,7 @@ with tab_tensor:
         height=400
     )
     
-    st.plotly_chart(fig_comp, use_container_width=True)
+    st.plotly_chart(fig_comp, use_container_width=True, key="plotly_016")
     
     # --- CPD RECONSTRUCTION ---
     st.subheader("🔧 CPD Reconstruction")
@@ -3607,7 +3608,7 @@ with tab_tensor:
                 marker_color='teal'
             ))
             fig_weights.update_layout(title="CPD Component Weights (lambda)", template="plotly_white")
-            st.plotly_chart(fig_weights, use_container_width=True)
+            st.plotly_chart(fig_weights, use_container_width=True, key="plotly_017")
 
         # Reconstruction quality visualization
         st.subheader("Reconstruction Quality")
@@ -3646,7 +3647,7 @@ with tab_tensor:
             height=500
         )
 
-        st.plotly_chart(fig_scatter, use_container_width=True)
+        st.plotly_chart(fig_scatter, use_container_width=True, key="plotly_018")
     with st.expander("📖 Tensor Decomposition Theory", expanded=False):
         st.markdown(r"""
         ### Canonical Polyadic Decomposition (CPD)
@@ -4312,7 +4313,7 @@ ight| 	imes S_{seg}(x(s))$$
                 start_label=f"A ({a_co:.2f},{a_cr:.2f},{a_fe:.2f})",
                 end_label=f"B ({b_co:.2f},{b_cr:.2f},{b_fe:.2f})"
             )
-            st.plotly_chart(fig_3d, use_container_width=True)
+            st.plotly_chart(fig_3d, use_container_width=True, key="plotly_019")
 
             # Analysis Dashboard
             st.subheader("📊 Gradient Analysis Dashboard")
@@ -4327,7 +4328,7 @@ ight| 	imes S_{seg}(x(s))$$
             )
 
             fig_dash = plot_gradient_analysis_dashboard(path_results, T_vals, result['s_vals'])
-            st.plotly_chart(fig_dash, use_container_width=True)
+            st.plotly_chart(fig_dash, use_container_width=True, key="plotly_020")
 
             # Composition table
             with st.expander("📋 Detailed Composition Table", expanded=False):
