@@ -2626,7 +2626,7 @@ if eval_query:
 # =============================================
 # MAIN VISUALIZATION TABS
 # =============================================
-tab_main, tab_tensor, tab_factors, tab_am = st.tabs(["🎨 Phase Visualization", "📊 Tensor Decomposition (CPD)", "🏭 AM Design Assistant"])
+tab_main, tab_tensor, tab_factors, tab_am = st.tabs(["🎨 Phase Visualization", "📊 Tensor Decomposition (CPD)", "🔢 Factor Matrices", "🏭 AM Design Assistant"])
 
 with tab_main:
     # Build interpolators for current temperature
