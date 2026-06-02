@@ -25,6 +25,11 @@
 
 [![meaningtowords](https://img.shields.io/badge/Gphase-v11.0-green)](https://free-energy-tensor-visualization11.streamlit.app/) ( Advanced v10, Temperature-morphed Free energy Tensor Visualization and ThermoSpherical Harmonics, G Tensor Quantification and Computation, Applications of Tensor Knowledge in Additive Manufacturing )
 
+[![meaningtowords](https://img.shields.io/badge/Gphase-v12.0-green)](https://free-energy-tensor-visualization12.streamlit.app/) ( Advanced v10, Temperature-morphed Free energy Tensor Visualization and ThermoSpherical Harmonics, G Tensor Quantification and Computation, Applications of Tensor Knowledge in Additive Manufacturing )
+
+
+
+
 
 
 
