@@ -439,6 +439,71 @@ def svd_rank_analysis(matrix, threshold=0.01):
     
     return rank, s, s_norm
 
+# =============================================
+# AUTO-SCALER FOR PHYSICAL-UNIT ERROR TRACKING
+# =============================================
+
+class AutoScaler:
+    """
+    Automatic tensor normalization with full metadata for denormalization.
+
+    Normalizes tensor to zero mean, unit variance while preserving NaN positions.
+    Tracks all statistics needed to convert errors back to physical units (J/mol).
+    """
+
+    def __init__(self, tensor, auto_normalize=True):
+        """
+        Args:
+            tensor: 4D numpy array with NaN for invalid entries
+            auto_normalize: If True, compute stats from valid (non-NaN) entries
+        """
+        self.tensor_shape = tensor.shape
+        self.auto_normalize = auto_normalize
+
+        if auto_normalize:
+            valid_data = tensor[~np.isnan(tensor)]
+            if len(valid_data) > 0:
+                self.mean = np.mean(valid_data)
+                self.std = np.std(valid_data)
+            else:
+                self.mean = 0.0
+                self.std = 1.0
+        else:
+            self.mean = 0.0
+            self.std = 1.0
+
+        # Prevent division by zero
+        if self.std < 1e-12:
+            self.std = 1.0
+
+    def normalize_tensor(self):
+        """Normalize the stored tensor reference: (G - μ) / σ, NaN preserved.
+
+        Note: This method is called when the tensor was passed at initialization.
+        For explicit tensor normalization, use normalize().
+        """
+        # This is a compatibility method - in the original design, the tensor
+        # might have been stored. We return normalization parameters for use
+        # with the tensor that was passed to __init__.
+        return None  # Placeholder - actual normalization happens in cpd_als_4d
+
+    def normalize(self, tensor):
+        """Normalize a tensor: (G - μ) / σ, NaN preserved."""
+        return (tensor - self.mean) / self.std
+
+    def denormalize(self, tensor_norm):
+        """Denormalize: G = tensor_norm * σ + μ, NaN preserved."""
+        return tensor_norm * self.std + self.mean
+
+    def denormalize_reconstruction(self, recon_norm):
+        """Denormalize a CPD reconstruction back to physical units."""
+        return recon_norm * self.std + self.mean
+
+    def denormalize_error(self, error_norm):
+        """Convert normalized RMSE to physical units (J/mol)."""
+        return error_norm * self.std
+
+
 def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, use_weighted=False, reg=1e-8):
     """
     4-way Canonical Polyadic Decomposition via WEIGHTED Alternating Least Squares.
