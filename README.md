@@ -35,6 +35,9 @@
 
 [![meaningtowords](https://img.shields.io/badge/Gphase-v16.0-green)](https://free-energy-tensor-visualization16.streamlit.app/) (Included Factor Matrices Visualization and Quadratic Expansion Analysis, Advanced v10, Temperature-morphed Free energy Tensor Visualization and ThermoSpherical Harmonics, G Tensor Quantification and Computation, Applications of Tensor Knowledge in Additive Manufacturing )
 
+[![meaningtowords](https://img.shields.io/badge/Gphase-v17.0-green)](https://free-energy-tensor-visualization17.streamlit.app/) (Included Factor Matrices Visualization and Advanced Quadratic Expansion Analysis, Advanced v10, Temperature-morphed Free energy Tensor Visualization and ThermoSpherical Harmonics, G Tensor Quantification and Computation, Applications of Tensor Knowledge in Additive Manufacturing )
+
+
 
 
 
