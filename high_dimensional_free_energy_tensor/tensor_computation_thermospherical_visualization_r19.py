@@ -440,69 +440,8 @@ def svd_rank_analysis(matrix, threshold=0.01):
     return rank, s, s_norm
 
 # =============================================
-# AUTO-SCALER FOR PHYSICAL-UNIT ERROR TRACKING
+# NORMALIZATION FOR PHYSICAL-UNIT ERROR TRACKING
 # =============================================
-
-class AutoScaler:
-    """
-    Automatic tensor normalization with full metadata for denormalization.
-
-    Normalizes tensor to zero mean, unit variance while preserving NaN positions.
-    Tracks all statistics needed to convert errors back to physical units (J/mol).
-    """
-
-    def __init__(self, tensor, auto_normalize=True):
-        """
-        Args:
-            tensor: 4D numpy array with NaN for invalid entries
-            auto_normalize: If True, compute stats from valid (non-NaN) entries
-        """
-        self.tensor_shape = tensor.shape
-        self.auto_normalize = auto_normalize
-
-        if auto_normalize:
-            valid_data = tensor[~np.isnan(tensor)]
-            if len(valid_data) > 0:
-                self.mean = np.mean(valid_data)
-                self.std = np.std(valid_data)
-            else:
-                self.mean = 0.0
-                self.std = 1.0
-        else:
-            self.mean = 0.0
-            self.std = 1.0
-
-        # Prevent division by zero
-        if self.std < 1e-12:
-            self.std = 1.0
-
-    def normalize_tensor(self):
-        """Normalize the stored tensor reference: (G - μ) / σ, NaN preserved.
-
-        Note: This method is called when the tensor was passed at initialization.
-        For explicit tensor normalization, use normalize().
-        """
-        # This is a compatibility method - in the original design, the tensor
-        # might have been stored. We return normalization parameters for use
-        # with the tensor that was passed to __init__.
-        return None  # Placeholder - actual normalization happens in cpd_als_4d
-
-    def normalize(self, tensor):
-        """Normalize a tensor: (G - μ) / σ, NaN preserved."""
-        return (tensor - self.mean) / self.std
-
-    def denormalize(self, tensor_norm):
-        """Denormalize: G = tensor_norm * σ + μ, NaN preserved."""
-        return tensor_norm * self.std + self.mean
-
-    def denormalize_reconstruction(self, recon_norm):
-        """Denormalize a CPD reconstruction back to physical units."""
-        return recon_norm * self.std + self.mean
-
-    def denormalize_error(self, error_norm):
-        """Convert normalized RMSE to physical units (J/mol)."""
-        return error_norm * self.std
-
 
 def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, use_weighted=False, reg=1e-8):
     """
@@ -512,7 +451,7 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, use_weighted=False, reg=1e-
     - Uses mask-weighted least squares instead of zero-imputation
     - Fits ONLY observed (simplex-valid) entries
     - Eliminates bias from ~83% NaN entries in sparse tensor
-    - Automatic normalization/denormalization with full metadata tracking
+    - Manual Z-score normalization with metadata for physical-unit error reporting
     - Returns error in PHYSICAL units (J/mol), not normalized units
 
     Reference: Tomasi & Bro (2005), "PARAFAC and missing values"
@@ -531,14 +470,26 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, use_weighted=False, reg=1e-
     Returns:
         A, B, C, D: Factor matrices (n_co,R), (n_cr,R), (n_fe,R), (n_T,R)
         lam: Component weights (R,)
-        error: Final RMSE on observed entries in PHYSICAL units (J/mol)
-        scaler: AutoScaler object with ScalingMetadata for denormalization
+        meta: Dict with 'mu', 'sigma' for denormalization, and 'error_physical' (RMSE in J/mol)
     """
-    # === AUTO-SCALING: Detect and apply normalization ===
-    scaler = AutoScaler(tensor, auto_normalize=True)
-    X_norm = scaler.normalize_tensor()  # (G - μ) / σ, NaN preserved
-    X = np.where(~np.isnan(X_norm), X_norm, 0)  # Zero-fill for numerical ops only
+    # === MANUAL Z-SCORE NORMALIZATION ===
     mask = ~np.isnan(tensor)
+    valid_entries = tensor[mask]
+
+    if len(valid_entries) > 0:
+        mu = np.mean(valid_entries)
+        sigma = np.std(valid_entries)
+    else:
+        mu = 0.0
+        sigma = 1.0
+
+    if sigma < 1e-12:
+        sigma = 1.0
+
+    # Normalize: (G - μ) / σ, NaN preserved
+    X_norm = (tensor - mu) / sigma
+    # Zero-fill for numerical ALS operations only
+    X = np.where(mask, X_norm, 0.0)
 
     I, J, K, L = tensor.shape
 
@@ -697,7 +648,7 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, use_weighted=False, reg=1e-
                   np.linalg.norm(C[:, r]) * np.linalg.norm(D[:, r]))
 
     # === DENORMALIZE reconstruction for physical validation ===
-    recon_physical = scaler.denormalize_reconstruction(recon_norm)
+    recon_physical = recon_norm * sigma + mu
 
     # Final error in PHYSICAL units (J/mol)
     physical_residuals = (tensor - recon_physical)[mask]
@@ -706,12 +657,15 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, use_weighted=False, reg=1e-
     else:
         final_error_physical = np.inf
 
-    return A, B, C, D, lam, final_error_physical, scaler
+    meta = {
+        'mu': mu,
+        'sigma': sigma,
+        'error_physical': final_error_physical,
+        'error_norm': error_norm if 'error_norm' in dir() else np.inf
+    }
 
-# =============================================
-# INTERPOLATION FOR CONTINUOUS COMPOSITION QUERIES
-# =============================================
-@st.cache_data(ttl=3600)
+    return A, B, C, D, lam, meta
+
 def build_interpolators_for_T(df, T):
     """
     Build LinearNDInterpolator for Gibbs energies at fixed temperature.
@@ -4038,7 +3992,7 @@ with tab_tensor:
                 tensor_std = np.nanstd(tensor_phase)
                 tensor_norm = (tensor_phase - tensor_mean) / (tensor_std + 1e-12)
 
-                A, B, C, D, lam, error = cpd_als_4d(tensor_norm, R_test, max_iter=max_iter, tol=1e-5, use_weighted=True, reg=1e-8)
+                A, B, C, D, lam, meta = cpd_als_4d(tensor_norm, R_test, max_iter=max_iter, tol=1e-5, use_weighted=True, reg=1e-8)
 
                 # Reconstruct
                 I, J, K, L = tensor_norm.shape
@@ -4061,7 +4015,7 @@ with tab_tensor:
                 st.session_state[f'C_{phase_key.lower()}'] = C
                 st.session_state[f'D_{phase_key.lower()}'] = D
                 st.session_state[f'lam_{phase_key.lower()}'] = lam
-                st.session_state[f'error_{phase_key.lower()}'] = error
+                st.session_state[f'error_{phase_key.lower()}'] = meta.get('error_physical', np.inf)
                 st.session_state[f'rel_error_{phase_key.lower()}'] = rel_error
                 st.session_state[f'abs_error_{phase_key.lower()}'] = abs_error
                 st.session_state['tdt_metadata'] = {
@@ -4911,7 +4865,7 @@ with tab_factors:
                     tensor_liq = tdt_data['G_LIQ']
                     mean_liq, std_liq = np.nanmean(tensor_liq), np.nanstd(tensor_liq)
                     tensor_norm = (tensor_liq - mean_liq) / (std_liq + 1e-12)
-                    A_liq, B_liq, C_liq, D_liq, lam_liq, _ = cpd_als_4d(tensor_norm, R_test, max_iter)
+                    A_liq, B_liq, C_liq, D_liq, lam_liq, meta_liq = cpd_als_4d(tensor_norm, R_test, max_iter)
                     st.session_state['A_liq'] = A_liq; st.session_state['B_liq'] = B_liq
                     st.session_state['C_liq'] = C_liq; st.session_state['D_liq'] = D_liq
                     st.session_state['lam_liq'] = lam_liq
@@ -4919,7 +4873,7 @@ with tab_factors:
                     tensor_fcc = tdt_data['G_FCC']
                     mean_fcc, std_fcc = np.nanmean(tensor_fcc), np.nanstd(tensor_fcc)
                     tensor_norm = (tensor_fcc - mean_fcc) / (std_fcc + 1e-12)
-                    A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc, _ = cpd_als_4d(tensor_norm, R_test, max_iter)
+                    A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc, meta_fcc = cpd_als_4d(tensor_norm, R_test, max_iter)
                     st.session_state['A_fcc'] = A_fcc; st.session_state['B_fcc'] = B_fcc
                     st.session_state['C_fcc'] = C_fcc; st.session_state['D_fcc'] = D_fcc
                     st.session_state['lam_fcc'] = lam_fcc
