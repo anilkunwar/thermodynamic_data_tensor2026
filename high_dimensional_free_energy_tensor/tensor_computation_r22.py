@@ -1,5 +1,4 @@
 """
-================================================================================
 Gibbs Energy CPD & Error Minimization Tutorial
 ================================================================================
 A focused educational app demonstrating:
@@ -47,7 +46,7 @@ def load_all_data(csv_dir=CSV_FILES_DIR):
     files = sorted(glob.glob(os.path.join(csv_dir, "Gibbs_*.csv")))
 
     if not files:
-        st.error(f"No CSV files found in `{csv_dir}`.\\n\\nExpected: Gibbs_700K.csv, Gibbs_800K.csv, ..., Gibbs_3300K.csv")
+        st.error(f"No CSV files found in `{csv_dir}`.\n\nExpected: Gibbs_700K.csv, Gibbs_800K.csv, ..., Gibbs_3300K.csv")
         st.stop()
 
     dfs = []
@@ -74,7 +73,7 @@ def load_all_data(csv_dir=CSV_FILES_DIR):
     return df_combined
 
 # =============================================
-# TENSOR CONSTRUCTION
+# TENSOR CONSTRUCTION (VECTORIZED)
 # =============================================
 @st.cache_data(ttl=7200)
 def build_tensor_data(df):
@@ -91,7 +90,6 @@ def build_tensor_data(df):
     fe_to_idx = {round(v, 4): i for i, v in enumerate(fe_vals)}
     T_to_idx = {T: i for i, T in enumerate(T_vals)}
 
-    # Vectorized mapping instead of slow iterrows()
     df_copy = df.copy()
     df_copy['i'] = df_copy['Co'].round(4).map(co_to_idx)
     df_copy['j'] = df_copy['Cr'].round(4).map(cr_to_idx)
@@ -104,9 +102,10 @@ def build_tensor_data(df):
     G_LIQ_tdt = np.full((n_co, n_cr, n_fe, n_T), np.nan, dtype=np.float64)
     G_FCC_tdt = np.full((n_co, n_cr, n_fe, n_T), np.nan, dtype=np.float64)
 
-    # Vectorized assignment using advanced indexing
-    G_LIQ_tdt[df_valid['i'].values, df_valid['j'].values, df_valid['k'].values, df_valid['t'].values] = df_valid['G_LIQ'].values
-    G_FCC_tdt[df_valid['i'].values, df_valid['j'].values, df_valid['k'].values, df_valid['t'].values] = df_valid['G_FCC'].values
+    G_LIQ_tdt[df_valid['i'].values, df_valid['j'].values,
+              df_valid['k'].values, df_valid['t'].values] = df_valid['G_LIQ'].values
+    G_FCC_tdt[df_valid['i'].values, df_valid['j'].values,
+              df_valid['k'].values, df_valid['t'].values] = df_valid['G_FCC'].values
 
     valid_count = len(df_valid)
     full_size = n_co * n_cr * n_fe * n_T
@@ -169,7 +168,7 @@ def svd_rank_analysis(matrix, threshold=0.01):
     return rank, s, s_norm
 
 # =============================================
-# CPD-ALS WITH PROPER NORMALIZATION
+# CPD-ALS WITH PROPER NORMALIZATION (OPTIMIZED & CORRECTED)
 # =============================================
 def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, reg=1e-8):
     """
@@ -354,7 +353,7 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, reg=1e-8):
         'error_norm': error_norm
     }
 
-    return A, B, C, D, lam, meta
+    return A, B, C, D, lam, recon_norm, meta
 
 
 # =============================================
@@ -473,25 +472,25 @@ def verify_quadratic_approximation(coeffs, A, B, C, D, lam, co_vals, cr_vals, fe
 
 
 # =============================================
-# VISUALIZATION FUNCTIONS
+# VISUALIZATION FUNCTIONS (OPTIMIZED)
 # =============================================
 
 def plot_parity_comparison(original, reconstructed, mask, title, x_label, y_label):
-    """Create parity plot: Original vs Reconstructed values (WebGL + downsampled)."""
+    """Create parity plot with downsampling and WebGL for browser performance."""
     orig_valid = original[mask]
     recon_valid = reconstructed[mask]
 
-    # --- FIX 1: Downsample to prevent browser freeze on large datasets ---
+    # Downsample to prevent browser freeze
     MAX_POINTS = 10000
     if len(orig_valid) > MAX_POINTS:
-        np.random.seed(42)  # For reproducibility
+        np.random.seed(42)
         indices = np.random.choice(len(orig_valid), MAX_POINTS, replace=False)
         orig_valid = orig_valid[indices]
         recon_valid = recon_valid[indices]
 
     fig = go.Figure()
 
-    # --- FIX 2: Use Scattergl for WebGL rendering performance ---
+    # Use Scattergl for WebGL rendering
     fig.add_trace(go.Scattergl(
         x=orig_valid,
         y=recon_valid,
@@ -887,22 +886,14 @@ with tab_cpd:
             tensor_std = float(np.nanstd(tensor_sel))
             tensor_norm = (tensor_sel - tensor_mean) / (tensor_std + 1e-12)
 
-            A, B, C, D, lam, meta = cpd_als_4d(
+            # Run the optimized & corrected CPD function
+            A, B, C, D, lam, recon_norm, meta = cpd_als_4d(
                 tensor_norm, R_test, max_iter=max_iter, tol=1e-5, reg=1e-8
             )
 
-            I, J, K, L = tensor_norm.shape
-            recon = np.zeros_like(tensor_norm)
+            # Compute errors
             mask = ~np.isnan(tensor_norm)
-
-            for r in range(R_test):
-                recon += lam[r] * np.outer(A[:, r], np.kron(np.kron(B[:, r], C[:, r]), D[:, r])).reshape(I, J, K, L)
-
-            # --- FIX: Cache the reconstructed tensor to avoid recomputing in Tab 4 ---
-            st.session_state[f'recon_norm_{phase_key.lower()}'] = recon
-            # -----------------------------------------------------------------------
-
-            rel_error = np.sqrt(np.sum(mask * (tensor_norm - recon)**2) / np.sum(mask))
+            rel_error = np.sqrt(np.sum(mask * (tensor_norm - recon_norm)**2) / np.sum(mask))
             abs_error = rel_error * tensor_std
 
             phase_key = "LIQ" if phase_for_tensor == "G_LIQUID" else "FCC"
@@ -916,6 +907,8 @@ with tab_cpd:
             st.session_state[f'cpd_completed_{phase_key}'] = True
             st.session_state[f'rel_error_{phase_key.lower()}'] = rel_error
             st.session_state[f'abs_error_{phase_key.lower()}'] = abs_error
+            # Cache the reconstructed tensor for Tab 4
+            st.session_state[f'recon_norm_{phase_key.lower()}'] = recon_norm
             st.session_state['tdt_metadata'] = {
                 'co_vals': tdt_data['co_vals'],
                 'cr_vals': tdt_data['cr_vals'],
@@ -972,15 +965,14 @@ with tab_recon:
         I, J, K, L = tensor_sel.shape
         mask = ~np.isnan(tensor_sel)
 
-        # --- FIX: Load cached reconstruction instead of recomputing heavy Kronecker products ---
+        # Load cached reconstruction (computed once during CPD)
         if f'recon_norm_{phase_key.lower()}' in st.session_state:
             recon_norm = st.session_state[f'recon_norm_{phase_key.lower()}']
         else:
-            # Fallback if somehow not in session state
+            # Fallback (should not happen)
             recon_norm = np.zeros_like(tensor_sel)
             for r in range(len(lam)):
                 recon_norm += lam[r] * np.outer(A[:, r], np.kron(np.kron(B[:, r], C[:, r]), D[:, r])).reshape(I, J, K, L)
-        # ------------------------------------------------------------------------------------
 
         recon_physical = recon_norm * sigma + mu
         recon_buggy = recon_norm
