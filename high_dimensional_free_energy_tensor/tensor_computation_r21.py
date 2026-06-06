@@ -183,7 +183,7 @@ with tab2:
     st.header("Tensor Decomposition (CPD-ALS)")
     phase = st.radio("Select Phase", ["G_LIQ", "G_FCC"], horizontal=True)
     tensor = G_LIQ if phase == "G_LIQ" else G_FCC
-    rank = st.slider("Rank (R)", 1, 10, 4)
+    rank = st.slider("Rank (R)", 1, 10, 6)
     
     if st.button("Run CPD-ALS", type="primary"):
         mask = ~np.isnan(tensor)
