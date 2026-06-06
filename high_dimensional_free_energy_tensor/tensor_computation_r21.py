@@ -92,11 +92,12 @@ rank = st.slider("CPD Rank (R)", 1, 10, 3)
 max_iter = st.slider("Max Iterations", 10, 100, 30)
 
 #
+#
 
 def run_masked_als(X, mask, rank, max_iter=50, reg=1e-4):
     """
     Mathematically rigorous Masked ALS for 4D CPD.
-    Uses Tikhonov regularization to prevent factor explosion in sparse tensors.
+    Uses explicit loops for np.linalg.solve to prevent NumPy broadcasting ValueErrors.
     """
     I, J, K, L = X.shape
     
@@ -109,40 +110,54 @@ def run_masked_als(X, mask, rank, max_iter=50, reg=1e-4):
     X_filled = np.where(mask, X, 0.0)
     mask_float = mask.astype(float)
     
-    # Regularization matrix (prevents division by zero in sparse regions)
+    # Tikhonov regularization matrix
     I_reg = reg * np.eye(rank)
     
     for it in range(max_iter):
         # --- UPDATE A (Mode-1) ---
-        # Gradient vector (T_A) and Hessian/Gram matrix (V_A)
         T_A = np.einsum('ijkl,jr,kr,lr->ir', X_filled, B, C, D)
         V_A = np.einsum('ijkl,jr,js,kr,ks,lr,ls->irs', mask_float, B, B, C, C, D, D)
-        # Solve the linear system: (V_A + lambda*I) * A = T_A
-        A = np.linalg.solve(V_A + I_reg, T_A)
-        
+        for i in range(I):
+            try:
+                A[i, :] = np.linalg.solve(V_A[i] + I_reg, T_A[i])
+            except np.linalg.LinAlgError:
+                A[i, :] = np.linalg.lstsq(V_A[i] + I_reg, T_A[i], rcond=None)[0]
+                
         # --- UPDATE B (Mode-2) ---
         T_B = np.einsum('ijkl,ir,kr,lr->jr', X_filled, A, C, D)
         V_B = np.einsum('ijkl,ir,is,kr,ks,lr,ls->jrs', mask_float, A, A, C, C, D, D)
-        B = np.linalg.solve(V_B + I_reg, T_B)
-        
+        for j in range(J):
+            try:
+                B[j, :] = np.linalg.solve(V_B[j] + I_reg, T_B[j])
+            except np.linalg.LinAlgError:
+                B[j, :] = np.linalg.lstsq(V_B[j] + I_reg, T_B[j], rcond=None)[0]
+                
         # --- UPDATE C (Mode-3) ---
         T_C = np.einsum('ijkl,ir,jr,lr->kr', X_filled, A, B, D)
         V_C = np.einsum('ijkl,ir,is,jr,js,lr,ls->krs', mask_float, A, A, B, B, D, D)
-        C = np.linalg.solve(V_C + I_reg, T_C)
-        
+        for k in range(K):
+            try:
+                C[k, :] = np.linalg.solve(V_C[k] + I_reg, T_C[k])
+            except np.linalg.LinAlgError:
+                C[k, :] = np.linalg.lstsq(V_C[k] + I_reg, T_C[k], rcond=None)[0]
+                
         # --- UPDATE D (Mode-4) ---
         T_D = np.einsum('ijkl,ir,jr,kr->lr', X_filled, A, B, C)
         V_D = np.einsum('ijkl,ir,is,jr,js,kr,ks->lrs', mask_float, A, A, B, B, C, C)
-        D = np.linalg.solve(V_D + I_reg, T_D)
-        
-        # Normalize columns at each step to prevent magnitude drift
+        for l_idx in range(L):
+            try:
+                D[l_idx, :] = np.linalg.solve(V_D[l_idx] + I_reg, T_D[l_idx])
+            except np.linalg.LinAlgError:
+                D[l_idx, :] = np.linalg.lstsq(V_D[l_idx] + I_reg, T_D[l_idx], rcond=None)[0]
+                
+        # --- NORMALIZE FACTORS ---
+        # Prevents magnitude drift and keeps factors bounded
         for r in range(rank):
             nA = np.linalg.norm(A[:, r]) or 1.0
             nB = np.linalg.norm(B[:, r]) or 1.0
             nC = np.linalg.norm(C[:, r]) or 1.0
             nD = np.linalg.norm(D[:, r]) or 1.0
             
-            # Distribute the magnitude evenly across the 4 factors
             factor = (nA * nB * nC * nD) ** 0.25
             if factor > 1e-12:
                 A[:, r] *= (nA / factor)
@@ -150,7 +165,7 @@ def run_masked_als(X, mask, rank, max_iter=50, reg=1e-4):
                 C[:, r] *= (nC / factor)
                 D[:, r] *= (nD / factor)
 
-    # Final extraction of weights (lambda)
+    # --- EXTRACT WEIGHTS (lambda) ---
     lam = np.ones(rank)
     for r in range(rank):
         nA = np.linalg.norm(A[:, r])
@@ -159,7 +174,6 @@ def run_masked_als(X, mask, rank, max_iter=50, reg=1e-4):
         nD = np.linalg.norm(D[:, r])
         lam[r] = nA * nB * nC * nD
         
-        # Normalize factors to unit norm for stability
         if lam[r] > 1e-12:
             A[:, r] /= nA
             B[:, r] /= nB
