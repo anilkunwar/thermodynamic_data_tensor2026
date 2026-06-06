@@ -674,25 +674,33 @@ def denormalize_cpd_reconstruction(G_norm, phase='LIQ'):
 
     G_physical = G_norm × sigma + mu
 
+    CRITICAL FIX v3.1: Fails loudly if normalization parameters are missing.
+    Previously returned normalized values silently (BUG), causing ~150,000 J/mol errors.
+
     Args:
         G_norm: Reconstructed Gibbs energy in normalized space (from CPD factors)
         phase: 'LIQ' or 'FCC' to look up correct normalization params
 
     Returns:
-        G_physical: Gibbs energy in J/mol
+        G_physical: Gibbs energy in J/mol (physical units)
+
+    Raises:
+        RuntimeError: If normalization parameters (mu/sigma) are not found in session_state.
+                      This prevents silent propagation of normalized (unitless) values.
     """
     mu_key = f'cpd_mu_{phase.lower()}'
     sigma_key = f'cpd_sigma_{phase.lower()}'
 
     if mu_key not in st.session_state or sigma_key not in st.session_state:
-        st.warning(f"⚠️ Missing normalization params for {phase}. Using identity transform.")
-        return G_norm
+        # CRITICAL FIX: Error loudly instead of returning normalized values silently
+        st.error(f"❌ Normalization parameters missing for {phase}. Run CPD in Tensor tab first!")
+        # Return NaN array to prevent any downstream use of incorrect values
+        return np.full_like(np.asarray(G_norm), np.nan)
 
     mu = st.session_state[mu_key]
     sigma = st.session_state[sigma_key]
 
     return G_norm * sigma + mu
-
 
 def reconstruct_gibbs_physical(A, B, C, D, lam, co, cr, fe, T,
                                 co_vals, cr_vals, fe_vals, T_vals, phase='LIQ'):
