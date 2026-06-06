@@ -39,6 +39,14 @@
 
 [![meaningtowords](https://img.shields.io/badge/Gphase-v18.0-green)](https://free-energy-tensor-visualization18.streamlit.app/) (Same unit for comparison of G_CPD (J/mol) and G_Quadratic (J/mol), Included Factor Matrices Visualization and Advanced Quadratic Expansion Analysis, Advanced v10, Temperature-morphed Free energy Tensor Visualization and ThermoSpherical Harmonics, G Tensor Quantification and Computation, Applications of Tensor Knowledge in Additive Manufacturing )
 
+[![meaningtowords](https://img.shields.io/badge/Gphase-v19.0-green)](https://free-energy-tensor-visualization19.streamlit.app/) (Same unit for comparison of G_CPD (J/mol) and G_Quadratic (J/mol), Included Factor Matrices Visualization and Advanced Quadratic Expansion Analysis, Advanced v10, Temperature-morphed Free energy Tensor Visualization and ThermoSpherical Harmonics, G Tensor Quantification and Computation, Applications of Tensor Knowledge in Additive Manufacturing )
+
+[![meaningtowords](https://img.shields.io/badge/Gphase-v20.0-green)](https://free-energy-tensor-visualization20.streamlit.app/) (Same unit for comparison of G_CPD (J/mol) and G_Quadratic (J/mol), Included Factor Matrices Visualization and Advanced Quadratic Expansion Analysis, Advanced v10, Temperature-morphed Free energy Tensor Visualization and ThermoSpherical Harmonics, G Tensor Quantification and Computation, Applications of Tensor Knowledge in Additive Manufacturing )
+
+[![meaningtowords](https://img.shields.io/badge/Gphase-v21.0-green)](https://free-energy-tensor-visualization21.streamlit.app/) (Tutorial on Tensor Computation )
+
+[![meaningtowords](https://img.shields.io/badge/Gphase-v22.0-green)](https://free-energy-tensor-visualization22.streamlit.app/) (Tutorial on Tensor Computation )
+
 
 
 
