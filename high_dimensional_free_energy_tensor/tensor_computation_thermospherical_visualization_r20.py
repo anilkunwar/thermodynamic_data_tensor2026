@@ -666,6 +666,63 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, use_weighted=False, reg=1e-
 
     return A, B, C, D, lam, meta
 
+
+
+def denormalize_cpd_reconstruction(G_norm, phase='LIQ'):
+    """
+    Convert CPD reconstruction from normalized space to physical J/mol.
+
+    G_physical = G_norm × sigma + mu
+
+    Args:
+        G_norm: Reconstructed Gibbs energy in normalized space (from CPD factors)
+        phase: 'LIQ' or 'FCC' to look up correct normalization params
+
+    Returns:
+        G_physical: Gibbs energy in J/mol
+    """
+    mu_key = f'cpd_mu_{phase.lower()}'
+    sigma_key = f'cpd_sigma_{phase.lower()}'
+
+    if mu_key not in st.session_state or sigma_key not in st.session_state:
+        st.warning(f"⚠️ Missing normalization params for {phase}. Using identity transform.")
+        return G_norm
+
+    mu = st.session_state[mu_key]
+    sigma = st.session_state[sigma_key]
+
+    return G_norm * sigma + mu
+
+
+def reconstruct_gibbs_physical(A, B, C, D, lam, co, cr, fe, T,
+                                co_vals, cr_vals, fe_vals, T_vals, phase='LIQ'):
+    """
+    Reconstruct physical Gibbs energy at a single (co, cr, fe, T) point.
+
+    Args:
+        A, B, C, D: CPD factor matrices
+        lam: Component weights
+        co, cr, fe, T: Query point
+        co_vals, cr_vals, fe_vals, T_vals: Grid values for interpolation
+        phase: 'LIQ' or 'FCC'
+
+    Returns:
+        G_physical: Gibbs energy in J/mol
+    """
+    R = len(lam)
+
+    # Interpolate factor values
+    A_q = np.array([np.interp(co, co_vals, A[:, r]) for r in range(R)])
+    B_q = np.array([np.interp(cr, cr_vals, B[:, r]) for r in range(R)])
+    C_q = np.array([np.interp(fe, fe_vals, C[:, r]) for r in range(R)])
+    D_q = np.array([np.interp(T, T_vals, D[:, r]) for r in range(R)])
+
+    # Reconstruct in normalized space
+    G_norm = np.sum(lam * A_q * B_q * C_q * D_q)
+
+    # Denormalize to physical units
+    return denormalize_cpd_reconstruction(G_norm, phase)
+
 def build_interpolators_for_T(df, T):
     """
     Build LinearNDInterpolator for Gibbs energies at fixed temperature.
@@ -1483,7 +1540,7 @@ def compute_quadratic_coefficients_from_cpd(
     }
 
 
-def verify_quadratic_approximation(coeffs, A, B, C, D, lam, co_vals, cr_vals, fe_vals, T_vals, test_compositions, test_temperatures):
+def verify_quadratic_approximation(coeffs, A, B, C, D, lam, co_vals, cr_vals, fe_vals, T_vals, test_compositions, test_temperatures, sigma=1.0, mu=0.0):
     """
     Verify the quadratic approximation against the full CPD reconstruction.
 
@@ -1497,8 +1554,10 @@ def verify_quadratic_approximation(coeffs, A, B, C, D, lam, co_vals, cr_vals, fe
 
     results = []
     for c_co, c_cr, c_fe, T in zip(test_compositions[:, 0], test_compositions[:, 1], test_compositions[:, 2], test_temperatures):
-        # Full CPD evaluation
-        G_full = sum(lam[r] * A_funcs[r](c_co) * B_funcs[r](c_cr) * C_funcs[r](c_fe) * D_funcs[r](T) for r in range(R))
+        # Full CPD evaluation (normalized space)
+        G_norm = sum(lam[r] * A_funcs[r](c_co) * B_funcs[r](c_cr) * C_funcs[r](c_fe) * D_funcs[r](T) for r in range(R))
+        # DENORMALIZE to physical J/mol
+        G_full = G_norm * sigma + mu
 
         # Quadratic approximation
         dc_co = c_co - coeffs['c_eq'][0]
@@ -1528,7 +1587,7 @@ def verify_quadratic_approximation(coeffs, A, B, C, D, lam, co_vals, cr_vals, fe
 
 def plot_cpd_vs_quadratic_comparison(coeffs, A, B, C, D, lam, 
                                       co_vals, cr_vals, fe_vals, T_vals,
-                                      c_eq, T_m):
+                                      c_eq, T_m, sigma=1.0, mu=0.0):
     """
     Create comprehensive comparison between Full CPD and Quadratic Approximation
     """
@@ -1560,9 +1619,9 @@ def plot_cpd_vs_quadratic_comparison(coeffs, A, B, C, D, lam,
     D_funcs = [UnivariateSpline(T_vals, D[:, r], s=0, ext=3) for r in range(R)]
 
     for c_co in co_slice:
-        g_full = sum(lam[r] * A_funcs[r](c_co) * B_funcs[r](c_eq[1]) * 
+        g_norm = sum(lam[r] * A_funcs[r](c_co) * B_funcs[r](c_eq[1]) * 
                      C_funcs[r](c_eq[2]) * D_funcs[r](T_m) for r in range(R))
-        G_full_slice.append(g_full)
+        G_full_slice.append(g_norm * sigma + mu)  # DENORMALIZE
 
         g_quad = (coeffs['G_eq'] + coeffs['A_Co']*(c_co - c_eq[0])**2)
         G_quad_slice.append(g_quad)
@@ -1593,9 +1652,9 @@ def plot_cpd_vs_quadratic_comparison(coeffs, A, B, C, D, lam,
 
     for i in range(len(co_2d)):
         for j in range(len(cr_2d)):
-            g_full = sum(lam[r] * A_funcs[r](co_2d[i]) * B_funcs[r](cr_2d[j]) * 
+            g_norm = sum(lam[r] * A_funcs[r](co_2d[i]) * B_funcs[r](cr_2d[j]) * 
                         C_funcs[r](c_eq[2]) * D_funcs[r](T_m) for r in range(R))
-            G_full_2d[j, i] = g_full
+            G_full_2d[j, i] = g_norm * sigma + mu  # DENORMALIZE
 
             g_quad = (coeffs['G_eq'] + 
                      coeffs['A_Co']*(co_2d[i] - c_eq[0])**2 +
@@ -1613,9 +1672,9 @@ def plot_cpd_vs_quadratic_comparison(coeffs, A, B, C, D, lam,
     G_full_T, G_quad_T = [], []
 
     for T in T_slice:
-        g_full = sum(lam[r] * A_funcs[r](c_eq[0]) * B_funcs[r](c_eq[1]) * 
+        g_norm = sum(lam[r] * A_funcs[r](c_eq[0]) * B_funcs[r](c_eq[1]) * 
                      C_funcs[r](c_eq[2]) * D_funcs[r](T) for r in range(R))
-        G_full_T.append(g_full)
+        G_full_T.append(g_norm * sigma + mu)  # DENORMALIZE
 
         g_quad = coeffs['G_eq'] + coeffs['A_T']*(T - T_m)**2
         G_quad_T.append(g_quad)
@@ -1647,7 +1706,7 @@ def plot_cpd_vs_quadratic_comparison(coeffs, A, B, C, D, lam,
 
 def plot_3d_comparison_surface(coeffs, A, B, C, D, lam,
                                 co_vals, cr_vals, fe_vals, T_vals,
-                                c_eq, T_m, sh_R_fixed=0.5):
+                                c_eq, T_m, sh_R_fixed=0.5, sigma=1.0, mu=0.0):
     """
     3D spherical harmonic comparison of Full CPD vs Quadratic
     """
@@ -1675,9 +1734,9 @@ def plot_3d_comparison_surface(coeffs, A, B, C, D, lam,
     for i in range(n_phi):
         for j in range(n_theta):
             if valid[i, j]:
-                g_full = sum(lam[r] * A_funcs[r](x[i,j]) * B_funcs[r](y[i,j]) * 
+                g_norm = sum(lam[r] * A_funcs[r](x[i,j]) * B_funcs[r](y[i,j]) * 
                             C_funcs[r](z[i,j]) * D_funcs[r](T_m) for r in range(R))
-                G_full[i, j] = g_full
+                G_full[i, j] = g_norm * sigma + mu  # DENORMALIZE
 
                 g_quad = (coeffs['G_eq'] + 
                          coeffs['A_Co']*(x[i,j] - c_eq[0])**2 +
@@ -2287,7 +2346,7 @@ def plot_reconstruction_surface(interp_liq, A_liq, B_liq, C_liq, D_liq, lam_liq,
 def plot_unified_factor_matrices(A_liq, B_liq, C_liq, D_liq, lam_liq,
                                   A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
                                   co_vals, cr_vals, fe_vals, T_vals,
-                                  phase='LIQUID', R=6):
+                                  phase='LIQUID', R=6, sigma=1.0):
     """
     Unified visualization of ALL FOUR CPD factor matrices (A, B, C, D) in one figure.
     Layout: 2x2 grid
@@ -2325,7 +2384,7 @@ def plot_unified_factor_matrices(A_liq, B_liq, C_liq, D_liq, lam_liq,
     # A matrix (Co)
     for r in range(R_eff):
         fig.add_trace(go.Scatter(
-            x=co_arr, y=lam[r] * A[:, r], mode='lines+markers',
+            x=co_arr, y=lam[r] * A[:, r] * sigma, mode='lines+markers',
             name=f'r={r+1}', line=dict(color=colors[r % len(colors)], width=2),
             marker=dict(size=5, color=colors[r % len(colors)]),
             showlegend=True, legendgroup=f'r{r+1}'
@@ -2334,7 +2393,7 @@ def plot_unified_factor_matrices(A_liq, B_liq, C_liq, D_liq, lam_liq,
     # B matrix (Cr)
     for r in range(R_eff):
         fig.add_trace(go.Scatter(
-            x=cr_arr, y=lam[r] * B[:, r], mode='lines+markers',
+            x=cr_arr, y=lam[r] * B[:, r] * sigma, mode='lines+markers',
             name=f'r={r+1}', line=dict(color=colors[r % len(colors)], width=2),
             marker=dict(size=5, color=colors[r % len(colors)]),
             showlegend=False, legendgroup=f'r{r+1}'
@@ -2343,7 +2402,7 @@ def plot_unified_factor_matrices(A_liq, B_liq, C_liq, D_liq, lam_liq,
     # C matrix (Fe)
     for r in range(R_eff):
         fig.add_trace(go.Scatter(
-            x=fe_arr, y=lam[r] * C[:, r], mode='lines+markers',
+            x=fe_arr, y=lam[r] * C[:, r] * sigma, mode='lines+markers',
             name=f'r={r+1}', line=dict(color=colors[r % len(colors)], width=2),
             marker=dict(size=5, color=colors[r % len(colors)]),
             showlegend=False, legendgroup=f'r{r+1}'
@@ -2458,11 +2517,13 @@ def render_factor_matrix_visualisation(A_liq, B_liq, C_liq, D_liq, lam_liq,
 
     phase_choice = st.radio("Select phase", ["LIQUID", "FCC"], index=0, horizontal=True, key="unified_phase")
 
+    sigma_phase = st.session_state.get(f'cpd_sigma_{phase_choice.lower()}', 1.0)
     fig_unified = plot_unified_factor_matrices(
         A_liq, B_liq, C_liq, D_liq, lam_liq,
         A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
         co_vals, cr_vals, fe_vals, T_vals,
-        phase=phase_choice, R=min(len(lam_liq), len(lam_fcc))
+        phase=phase_choice, R=min(len(lam_liq), len(lam_fcc)),
+        sigma=sigma_phase
     )
     st.plotly_chart(fig_unified, use_container_width=True, key="plotly_unified_main")
 
@@ -2483,18 +2544,22 @@ def render_factor_matrix_visualisation(A_liq, B_liq, C_liq, D_liq, lam_liq,
         col1, col2 = st.columns(2)
         with col1:
             st.markdown("**LIQUID**")
+            sigma_liq = st.session_state.get('cpd_sigma_liq', 1.0)
             fig_liq = plot_unified_factor_matrices(
                 A_liq, B_liq, C_liq, D_liq, lam_liq,
                 A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
-                co_vals, cr_vals, fe_vals, T_vals, phase='LIQUID', R=R
+                co_vals, cr_vals, fe_vals, T_vals, phase='LIQUID', R=R,
+                sigma=sigma_liq
             )
             st.plotly_chart(fig_liq, use_container_width=True, key="plotly_liq_compare")
         with col2:
             st.markdown("**FCC**")
+            sigma_fcc = st.session_state.get('cpd_sigma_fcc', 1.0)
             fig_fcc = plot_unified_factor_matrices(
                 A_liq, B_liq, C_liq, D_liq, lam_liq,
                 A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
-                co_vals, cr_vals, fe_vals, T_vals, phase='FCC', R=R
+                co_vals, cr_vals, fe_vals, T_vals, phase='FCC', R=R,
+                sigma=sigma_fcc
             )
             st.plotly_chart(fig_fcc, use_container_width=True, key="plotly_fcc_compare")
 
@@ -4015,6 +4080,13 @@ with tab_tensor:
                 st.session_state[f'C_{phase_key.lower()}'] = C
                 st.session_state[f'D_{phase_key.lower()}'] = D
                 st.session_state[f'lam_{phase_key.lower()}'] = lam
+
+                # CRITICAL FIX: Store physical normalization parameters for downstream denormalization
+                # The factor matrices reconstruct G_norm = (G_physical - mu) / sigma
+                # We need the ORIGINAL physical tensor's mu and sigma, not cpd_als_4d's internal ones
+                st.session_state[f'cpd_mu_{phase_key.lower()}'] = float(tensor_mean)
+                st.session_state[f'cpd_sigma_{phase_key.lower()}'] = float(tensor_std)
+
                 st.session_state[f'error_{phase_key.lower()}'] = meta.get('error_physical', np.inf)
                 st.session_state[f'rel_error_{phase_key.lower()}'] = rel_error
                 st.session_state[f'abs_error_{phase_key.lower()}'] = abs_error
@@ -4088,8 +4160,10 @@ with tab_tensor:
         T_slice = st.selectbox("Select Temperature Slice", tdt_data['T_vals'])
         t_idx = tdt_data['T_vals'].index(T_slice)
 
-        orig_slice = tensor_sel[:,:,:,t_idx]
-        recon_slice = recon[:,:,:,t_idx] * tensor_std + tensor_mean
+        orig_slice = tensor_sel[:,:,:,t_idx]  # Already in physical J/mol
+        # CRITICAL FIX: Use physical tensor_std/tensor_mean for denormalization
+        # (meta['sigma']/meta['mu'] from cpd_als_4d are internal ≈1/≈0, not physical)
+        recon_slice = recon[:,:,:,t_idx] * tensor_std + tensor_mean  # Physical J/mol
 
         valid_mask_slice = ~np.isnan(orig_slice)
         orig_valid = orig_slice[valid_mask_slice]
@@ -4168,7 +4242,8 @@ with tab_tensor:
 def evaluate_composition_path(path_func, s_vals, T_vals_query, 
                                A_liq, B_liq, C_liq, D_liq, lam_liq,
                                A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
-                               co_vals, cr_vals, fe_vals, T_vals_grid):
+                               co_vals, cr_vals, fe_vals, T_vals_grid,
+                               sigma_liq=1.0, mu_liq=0.0, sigma_fcc=1.0, mu_fcc=0.0):
     """
     Evaluate Gibbs energy along a parametric composition path.
 
@@ -4237,13 +4312,15 @@ def evaluate_composition_path(path_func, s_vals, T_vals_query,
 
         # Evaluate at each temperature
         for t_idx, T in enumerate(T_vals_query):
-            # LIQUID Gibbs energy
+            # LIQUID Gibbs energy (normalized -> physical J/mol)
             D_liq_T = np.array([f(T) for f in D_liq_interp])
-            G_liq_path[i, t_idx] = np.sum(lam_liq * A_liq_q * B_liq_q * C_liq_q * D_liq_T)
+            G_norm_liq = np.sum(lam_liq * A_liq_q * B_liq_q * C_liq_q * D_liq_T)
+            G_liq_path[i, t_idx] = G_norm_liq * sigma_liq + mu_liq
 
-            # FCC Gibbs energy
+            # FCC Gibbs energy (normalized -> physical J/mol)
             D_fcc_T = np.array([f(T) for f in D_fcc_interp])
-            G_fcc_path[i, t_idx] = np.sum(lam_fcc * A_fcc_q * B_fcc_q * C_fcc_q * D_fcc_T)
+            G_norm_fcc = np.sum(lam_fcc * A_fcc_q * B_fcc_q * C_fcc_q * D_fcc_T)
+            G_fcc_path[i, t_idx] = G_norm_fcc * sigma_fcc + mu_fcc
 
             # Driving force and phase
             dG_path[i, t_idx] = G_liq_path[i, t_idx] - G_fcc_path[i, t_idx]
@@ -4350,12 +4427,18 @@ def design_optimal_gradient(start_comp, end_comp, n_points=50,
         path = path_from_params(params)
 
         # Evaluate T* along path at process temperature
+        sigma_liq = st.session_state.get('cpd_sigma_liq', 1.0)
+        mu_liq = st.session_state.get('cpd_mu_liq', 0.0)
+        sigma_fcc = st.session_state.get('cpd_sigma_fcc', 1.0)
+        mu_fcc = st.session_state.get('cpd_mu_fcc', 0.0)
+
         path_results = evaluate_composition_path(
             lambda s: path[int(s * (n_points - 1))] if int(s * (n_points - 1)) < n_points else path[-1],
             s_vals, [T_process],
             A_liq, B_liq, C_liq, D_liq, lam_liq,
             A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
-            co_vals, cr_vals, fe_vals, T_vals
+            co_vals, cr_vals, fe_vals, T_vals,
+            sigma_liq=sigma_liq, mu_liq=mu_liq, sigma_fcc=sigma_fcc, mu_fcc=mu_fcc
         )
 
         T_star = path_results['T_star']
@@ -4427,12 +4510,18 @@ def check_gradient_feasibility(path_pts, T_vals_query, A_liq, B_liq, C_liq, D_li
                                 co_vals, cr_vals, fe_vals, T_vals_grid,
                                 T_melt_pool=2800, T_solidus=1600, T_haz=1200):
     """Check if a composition gradient is feasible for AM processing."""
+    sigma_liq = st.session_state.get('cpd_sigma_liq', 1.0)
+    mu_liq = st.session_state.get('cpd_mu_liq', 0.0)
+    sigma_fcc = st.session_state.get('cpd_sigma_fcc', 1.0)
+    mu_fcc = st.session_state.get('cpd_mu_fcc', 0.0)
+
     results = evaluate_composition_path(
         lambda s: path_pts[int(s * (len(path_pts) - 1))] if int(s * (len(path_pts) - 1)) < len(path_pts) else path_pts[-1],
         np.linspace(0, 1, len(path_pts)), T_vals_query,
         A_liq, B_liq, C_liq, D_liq, lam_liq,
         A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
-        co_vals, cr_vals, fe_vals, T_vals_grid
+        co_vals, cr_vals, fe_vals, T_vals_grid,
+        sigma_liq=sigma_liq, mu_liq=mu_liq, sigma_fcc=sigma_fcc, mu_fcc=mu_fcc
     )
 
     issues = []
@@ -4792,12 +4881,18 @@ ight| 	imes S_{seg}(x(s))$$
             st.subheader("📊 Gradient Analysis Dashboard")
 
             # Re-evaluate for dashboard
+            sigma_liq = st.session_state.get('cpd_sigma_liq', 1.0)
+            mu_liq = st.session_state.get('cpd_mu_liq', 0.0)
+            sigma_fcc = st.session_state.get('cpd_sigma_fcc', 1.0)
+            mu_fcc = st.session_state.get('cpd_mu_fcc', 0.0)
+
             path_results = evaluate_composition_path(
                 lambda s: result['path'][int(s * (n_points - 1))] if int(s * (n_points - 1)) < n_points else result['path'][-1],
                 result['s_vals'], T_vals,
                 A_liq, B_liq, C_liq, D_liq, lam_liq,
                 A_fcc, B_fcc, C_fcc, D_fcc, lam_fcc,
-                co_vals, cr_vals, fe_vals, T_vals
+                co_vals, cr_vals, fe_vals, T_vals,
+                sigma_liq=sigma_liq, mu_liq=mu_liq, sigma_fcc=sigma_fcc, mu_fcc=mu_fcc
             )
 
             fig_dash = plot_gradient_analysis_dashboard(path_results, T_vals, result['s_vals'])
@@ -4905,6 +5000,13 @@ with tab_factors:
                 st.session_state['A_fcc'] = A_fcc; st.session_state['B_fcc'] = B_fcc
                 st.session_state['C_fcc'] = C_fcc; st.session_state['D_fcc'] = D_fcc
                 st.session_state['lam_fcc'] = lam_fcc
+
+                # CRITICAL FIX: Demo data needs realistic normalization params for physical units
+                st.session_state['cpd_mu_liq'] = -150000.0
+                st.session_state['cpd_sigma_liq'] = 80000.0
+                st.session_state['cpd_mu_fcc'] = -145000.0
+                st.session_state['cpd_sigma_fcc'] = 75000.0
+
                 st.session_state['tdt_metadata'] = {
                     'co_vals': tdt_data['co_vals'], 'cr_vals': tdt_data['cr_vals'],
                     'fe_vals': tdt_data['fe_vals'], 'T_vals': tdt_data['T_vals'],
@@ -4963,16 +5065,46 @@ with tab_quadratic:
         if st.button("🔬 Compute Quadratic Coefficients", use_container_width=True, type="primary", key="quad_compute"):
             with st.spinner("Computing Hessian from CPD factors..."):
                 meta = st.session_state['tdt_metadata']
-                coeffs_fcc = compute_quadratic_coefficients_from_cpd(
+                coeffs_fcc_norm = compute_quadratic_coefficients_from_cpd(
                     st.session_state['A_fcc'], st.session_state['B_fcc'], st.session_state['C_fcc'], st.session_state['D_fcc'], 
                     st.session_state['lam_fcc'], meta['co_vals'], meta['cr_vals'], meta['fe_vals'], meta['T_vals'],
                     c_eq_co, c_eq_cr, c_eq_fe, T_m
                 )
-                coeffs_liq = compute_quadratic_coefficients_from_cpd(
+                coeffs_liq_norm = compute_quadratic_coefficients_from_cpd(
                     st.session_state['A_liq'], st.session_state['B_liq'], st.session_state['C_liq'], st.session_state['D_liq'], 
                     st.session_state['lam_liq'], meta['co_vals'], meta['cr_vals'], meta['fe_vals'], meta['T_vals'],
                     c_eq_co, c_eq_cr, c_eq_fe, T_m
                 )
+
+                # CRITICAL FIX: Denormalize quadratic coefficients to physical units (J/mol)
+                # Coefficients from compute_quadratic_coefficients_from_cpd are in normalized space
+                # since they use normalized factor matrices. Second derivatives scale by sigma,
+                # and G_eq scales by sigma and shifts by mu.
+                sigma_fcc = st.session_state.get('cpd_sigma_fcc', 1.0)
+                mu_fcc = st.session_state.get('cpd_mu_fcc', 0.0)
+                sigma_liq = st.session_state.get('cpd_sigma_liq', 1.0)
+                mu_liq = st.session_state.get('cpd_mu_liq', 0.0)
+
+                coeffs_fcc = {
+                    'A_Co': coeffs_fcc_norm['A_Co'] * sigma_fcc,
+                    'A_Cr': coeffs_fcc_norm['A_Cr'] * sigma_fcc,
+                    'A_Fe': coeffs_fcc_norm['A_Fe'] * sigma_fcc,
+                    'A_T':  coeffs_fcc_norm['A_T']  * sigma_fcc,
+                    'G_eq': coeffs_fcc_norm['G_eq'] * sigma_fcc + mu_fcc,
+                    'c_eq': coeffs_fcc_norm['c_eq'],
+                    'T_m':  coeffs_fcc_norm['T_m']
+                }
+
+                coeffs_liq = {
+                    'A_Co': coeffs_liq_norm['A_Co'] * sigma_liq,
+                    'A_Cr': coeffs_liq_norm['A_Cr'] * sigma_liq,
+                    'A_Fe': coeffs_liq_norm['A_Fe'] * sigma_liq,
+                    'A_T':  coeffs_liq_norm['A_T']  * sigma_liq,
+                    'G_eq': coeffs_liq_norm['G_eq'] * sigma_liq + mu_liq,
+                    'c_eq': coeffs_liq_norm['c_eq'],
+                    'T_m':  coeffs_liq_norm['T_m']
+                }
+
                 st.session_state['quadratic_coeffs_fcc'] = coeffs_fcc
                 st.session_state['quadratic_coeffs_liq'] = coeffs_liq
                 st.success("✅ Quadratic coefficients computed and stored!")
@@ -5011,10 +5143,14 @@ with tab_quadratic:
             test_temperatures = np.random.uniform(max(700, T_m-200), min(3300, T_m+200), len(test_compositions))
 
             meta = st.session_state['tdt_metadata']
+            sigma_fcc = st.session_state.get('cpd_sigma_fcc', 1.0)
+            mu_fcc = st.session_state.get('cpd_mu_fcc', 0.0)
+
             verify_df_fcc = verify_quadratic_approximation(
                 coeffs_fcc, st.session_state['A_fcc'], st.session_state['B_fcc'], st.session_state['C_fcc'], st.session_state['D_fcc'], 
                 st.session_state['lam_fcc'], meta['co_vals'], meta['cr_vals'], meta['fe_vals'], meta['T_vals'],
-                test_compositions, test_temperatures
+                test_compositions, test_temperatures,
+                sigma=sigma_fcc, mu=mu_fcc
             )
 
             c1, c2, c3 = st.columns(3)
@@ -5032,8 +5168,12 @@ with tab_quadratic:
             C_funcs = [UnivariateSpline(meta['fe_vals'], st.session_state['C_fcc'][:, r], s=0, ext=3) for r in range(R_fcc)]
             D_funcs = [UnivariateSpline(meta['T_vals'], st.session_state['D_fcc'][:, r], s=0, ext=3) for r in range(R_fcc)]
 
+            sigma_fcc = st.session_state.get('cpd_sigma_fcc', 1.0)
+            mu_fcc = st.session_state.get('cpd_mu_fcc', 0.0)
+
             for c_co in co_slice:
-                g_full = sum(st.session_state['lam_fcc'][r] * A_funcs[r](c_co) * B_funcs[r](c_eq_cr) * C_funcs[r](c_eq_fe) * D_funcs[r](T_m) for r in range(R_fcc))
+                g_norm = sum(st.session_state['lam_fcc'][r] * A_funcs[r](c_co) * B_funcs[r](c_eq_cr) * C_funcs[r](c_eq_fe) * D_funcs[r](T_m) for r in range(R_fcc))
+                g_full = g_norm * sigma_fcc + mu_fcc  # DENORMALIZE to physical J/mol
                 G_full_slice.append(g_full)
                 g_quad = coeffs_fcc['G_eq'] + coeffs_fcc['A_Co']*(c_co - c_eq_co)**2
                 G_quad_slice.append(g_quad)
@@ -5049,23 +5189,31 @@ with tab_quadratic:
             st.subheader("📊 Comprehensive CPD vs Quadratic Comparison")
             if st.button("Generate Full Comparison Analysis", type="primary", key="quad_full_comp"):
                 with st.spinner("Generating comprehensive comparison..."):
+                    sigma_fcc = st.session_state.get('cpd_sigma_fcc', 1.0)
+                    mu_fcc = st.session_state.get('cpd_mu_fcc', 0.0)
+
                     fig_comp = plot_cpd_vs_quadratic_comparison(
                         coeffs_fcc, st.session_state['A_fcc'], st.session_state['B_fcc'],
                         st.session_state['C_fcc'], st.session_state['D_fcc'],
                         st.session_state['lam_fcc'], meta['co_vals'], meta['cr_vals'],
                         meta['fe_vals'], meta['T_vals'],
-                        [c_eq_co, c_eq_cr, c_eq_fe], T_m
+                        [c_eq_co, c_eq_cr, c_eq_fe], T_m,
+                        sigma=sigma_fcc, mu=mu_fcc
                     )
                     st.plotly_chart(fig_comp, use_container_width=True, key="plotly_quad_comp")
 
                     # 3D comparison
                     st.subheader("🌐 3D Surface Comparison")
+                    sigma_fcc = st.session_state.get('cpd_sigma_fcc', 1.0)
+                    mu_fcc = st.session_state.get('cpd_mu_fcc', 0.0)
+
                     fig_3d = plot_3d_comparison_surface(
                         coeffs_fcc, st.session_state['A_fcc'], st.session_state['B_fcc'],
                         st.session_state['C_fcc'], st.session_state['D_fcc'],
                         st.session_state['lam_fcc'], meta['co_vals'], meta['cr_vals'],
                         meta['fe_vals'], meta['T_vals'],
-                        [c_eq_co, c_eq_cr, c_eq_fe], T_m
+                        [c_eq_co, c_eq_cr, c_eq_fe], T_m,
+                        sigma=sigma_fcc, mu=mu_fcc
                     )
                     st.plotly_chart(fig_3d, use_container_width=True, key="plotly_quad_3d")
 
