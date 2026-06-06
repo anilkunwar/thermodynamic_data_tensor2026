@@ -91,39 +91,83 @@ st.header("Step 3: CPD Decomposition")
 rank = st.slider("CPD Rank (R)", 1, 10, 3)
 max_iter = st.slider("Max Iterations", 10, 100, 30)
 
-def run_masked_als(X, mask, rank, max_iter):
+#
+
+def run_masked_als(X, mask, rank, max_iter=50, reg=1e-4):
+    """
+    Mathematically rigorous Masked ALS for 4D CPD.
+    Uses Tikhonov regularization to prevent factor explosion in sparse tensors.
+    """
     I, J, K, L = X.shape
+    
+    # Initialize factors randomly
     A = np.random.rand(I, rank)
     B = np.random.rand(J, rank)
     C = np.random.rand(K, rank)
     D = np.random.rand(L, rank)
-    lam = np.ones(rank)
     
-    X_filled = np.where(mask, X, 0)
+    X_filled = np.where(mask, X, 0.0)
     mask_float = mask.astype(float)
     
+    # Regularization matrix (prevents division by zero in sparse regions)
+    I_reg = reg * np.eye(rank)
+    
     for it in range(max_iter):
-        # Update A
-        T1 = np.einsum('ijkl,jr,kr,lr->ir', X_filled, B, C, D)
-        N1 = np.einsum('ijkl,jr,kr,lr->ir', mask_float, B, C, D)
-        A = T1 / (N1 + 1e-12)
+        # --- UPDATE A (Mode-1) ---
+        # Gradient vector (T_A) and Hessian/Gram matrix (V_A)
+        T_A = np.einsum('ijkl,jr,kr,lr->ir', X_filled, B, C, D)
+        V_A = np.einsum('ijkl,jr,js,kr,ks,lr,ls->irs', mask_float, B, B, C, C, D, D)
+        # Solve the linear system: (V_A + lambda*I) * A = T_A
+        A = np.linalg.solve(V_A + I_reg, T_A)
         
-        # Update B
-        T2 = np.einsum('ijkl,ir,kr,lr->jr', X_filled, A, C, D)
-        N2 = np.einsum('ijkl,ir,kr,lr->jr', mask_float, A, C, D)
-        B = T2 / (N2 + 1e-12)
+        # --- UPDATE B (Mode-2) ---
+        T_B = np.einsum('ijkl,ir,kr,lr->jr', X_filled, A, C, D)
+        V_B = np.einsum('ijkl,ir,is,kr,ks,lr,ls->jrs', mask_float, A, A, C, C, D, D)
+        B = np.linalg.solve(V_B + I_reg, T_B)
         
-        # Update C
-        T3 = np.einsum('ijkl,ir,jr,lr->kr', X_filled, A, B, D)
-        N3 = np.einsum('ijkl,ir,jr,lr->kr', mask_float, A, B, D)
-        C = T3 / (N3 + 1e-12)
+        # --- UPDATE C (Mode-3) ---
+        T_C = np.einsum('ijkl,ir,jr,lr->kr', X_filled, A, B, D)
+        V_C = np.einsum('ijkl,ir,is,jr,js,lr,ls->krs', mask_float, A, A, B, B, D, D)
+        C = np.linalg.solve(V_C + I_reg, T_C)
         
-        # Update D
-        T4 = np.einsum('ijkl,ir,jr,kr->lr', X_filled, A, B, C)
-        N4 = np.einsum('ijkl,ir,jr,kr->lr', mask_float, A, B, C)
-        D = T4 / (N4 + 1e-12)
+        # --- UPDATE D (Mode-4) ---
+        T_D = np.einsum('ijkl,ir,jr,kr->lr', X_filled, A, B, C)
+        V_D = np.einsum('ijkl,ir,is,jr,js,kr,ks->lrs', mask_float, A, A, B, B, C, C)
+        D = np.linalg.solve(V_D + I_reg, T_D)
         
+        # Normalize columns at each step to prevent magnitude drift
+        for r in range(rank):
+            nA = np.linalg.norm(A[:, r]) or 1.0
+            nB = np.linalg.norm(B[:, r]) or 1.0
+            nC = np.linalg.norm(C[:, r]) or 1.0
+            nD = np.linalg.norm(D[:, r]) or 1.0
+            
+            # Distribute the magnitude evenly across the 4 factors
+            factor = (nA * nB * nC * nD) ** 0.25
+            if factor > 1e-12:
+                A[:, r] *= (nA / factor)
+                B[:, r] *= (nB / factor)
+                C[:, r] *= (nC / factor)
+                D[:, r] *= (nD / factor)
+
+    # Final extraction of weights (lambda)
+    lam = np.ones(rank)
+    for r in range(rank):
+        nA = np.linalg.norm(A[:, r])
+        nB = np.linalg.norm(B[:, r])
+        nC = np.linalg.norm(C[:, r])
+        nD = np.linalg.norm(D[:, r])
+        lam[r] = nA * nB * nC * nD
+        
+        # Normalize factors to unit norm for stability
+        if lam[r] > 1e-12:
+            A[:, r] /= nA
+            B[:, r] /= nB
+            C[:, r] /= nC
+            D[:, r] /= nD
+            
     return A, B, C, D, lam
+
 
 if st.button("Run CPD-ALS"):
     with st.spinner("Decomposing..."):
