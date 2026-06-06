@@ -671,36 +671,21 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, use_weighted=False, reg=1e-
 def denormalize_cpd_reconstruction(G_norm, phase='LIQ'):
     """
     Convert CPD reconstruction from normalized space to physical J/mol.
-
     G_physical = G_norm × sigma + mu
-
-    CRITICAL FIX v3.1: Fails loudly if normalization parameters are missing.
-    Previously returned normalized values silently (BUG), causing ~150,000 J/mol errors.
-
-    Args:
-        G_norm: Reconstructed Gibbs energy in normalized space (from CPD factors)
-        phase: 'LIQ' or 'FCC' to look up correct normalization params
-
-    Returns:
-        G_physical: Gibbs energy in J/mol (physical units)
-
-    Raises:
-        RuntimeError: If normalization parameters (mu/sigma) are not found in session_state.
-                      This prevents silent propagation of normalized (unitless) values.
     """
     mu_key = f'cpd_mu_{phase.lower()}'
     sigma_key = f'cpd_sigma_{phase.lower()}'
 
     if mu_key not in st.session_state or sigma_key not in st.session_state:
-        # CRITICAL FIX: Error loudly instead of returning normalized values silently
-        st.error(f"❌ Normalization parameters missing for {phase}. Run CPD in Tensor tab first!")
-        # Return NaN array to prevent any downstream use of incorrect values
-        return np.full_like(np.asarray(G_norm), np.nan)
+        # CRITICAL FIX v3.2: Fail loudly instead of returning normalized values silently.
+        # Previously returned G_norm (values near 0), causing ~150,000 J/mol silent errors.
+        st.error(f"❌ CRITICAL: Missing normalization params for {phase}. Run CPD in the Tensor tab first!")
+        return np.full_like(G_norm, np.nan)
 
     mu = st.session_state[mu_key]
     sigma = st.session_state[sigma_key]
-
     return G_norm * sigma + mu
+
 
 def reconstruct_gibbs_physical(A, B, C, D, lam, co, cr, fe, T,
                                 co_vals, cr_vals, fe_vals, T_vals, phase='LIQ'):
@@ -4984,6 +4969,8 @@ with tab_factors:
                     st.session_state['A_liq'] = A_liq; st.session_state['B_liq'] = B_liq
                     st.session_state['C_liq'] = C_liq; st.session_state['D_liq'] = D_liq
                     st.session_state['lam_liq'] = lam_liq
+                    st.session_state['cpd_mu_liq'] = float(mean_liq)
+                    st.session_state['cpd_sigma_liq'] = float(std_liq)
                 with st.spinner("Running CPD for FCC..."):
                     tensor_fcc = tdt_data['G_FCC']
                     mean_fcc, std_fcc = np.nanmean(tensor_fcc), np.nanstd(tensor_fcc)
@@ -4992,6 +4979,8 @@ with tab_factors:
                     st.session_state['A_fcc'] = A_fcc; st.session_state['B_fcc'] = B_fcc
                     st.session_state['C_fcc'] = C_fcc; st.session_state['D_fcc'] = D_fcc
                     st.session_state['lam_fcc'] = lam_fcc
+                    st.session_state['cpd_mu_fcc'] = float(mean_fcc)
+                    st.session_state['cpd_sigma_fcc'] = float(std_fcc)
                 st.session_state['tdt_metadata'] = {
                     'co_vals': tdt_data['co_vals'], 'cr_vals': tdt_data['cr_vals'],
                     'fe_vals': tdt_data['fe_vals'], 'T_vals': tdt_data['T_vals'],
