@@ -78,7 +78,7 @@ def load_all_data(csv_dir=CSV_FILES_DIR):
 # =============================================
 @st.cache_data(ttl=7200)
 def build_tensor_data(df):
-    """Build 4D Thermodynamic Data Tensor from DataFrame."""
+    """Build 4D Thermodynamic Data Tensor from DataFrame (Vectorized)."""
     co_vals = sorted(df["Co"].unique())
     cr_vals = sorted(df["Cr"].unique())
     fe_vals = sorted(df["Fe"].unique())
@@ -91,22 +91,24 @@ def build_tensor_data(df):
     fe_to_idx = {round(v, 4): i for i, v in enumerate(fe_vals)}
     T_to_idx = {T: i for i, T in enumerate(T_vals)}
 
+    # Vectorized mapping instead of slow iterrows()
+    df_copy = df.copy()
+    df_copy['i'] = df_copy['Co'].round(4).map(co_to_idx)
+    df_copy['j'] = df_copy['Cr'].round(4).map(cr_to_idx)
+    df_copy['k'] = df_copy['Fe'].round(4).map(fe_to_idx)
+    df_copy['t'] = df_copy['T'].map(T_to_idx)
+
+    df_valid = df_copy.dropna(subset=['i', 'j', 'k', 't'])
+    df_valid = df_valid.astype({'i': int, 'j': int, 'k': int, 't': int})
+
     G_LIQ_tdt = np.full((n_co, n_cr, n_fe, n_T), np.nan, dtype=np.float64)
     G_FCC_tdt = np.full((n_co, n_cr, n_fe, n_T), np.nan, dtype=np.float64)
 
-    valid_count = 0
-    for _, row in df.iterrows():
-        co = round(row['Co'], 4)
-        cr = round(row['Cr'], 4)
-        fe = round(row['Fe'], 4)
-        T = row['T']
+    # Vectorized assignment using advanced indexing
+    G_LIQ_tdt[df_valid['i'].values, df_valid['j'].values, df_valid['k'].values, df_valid['t'].values] = df_valid['G_LIQ'].values
+    G_FCC_tdt[df_valid['i'].values, df_valid['j'].values, df_valid['k'].values, df_valid['t'].values] = df_valid['G_FCC'].values
 
-        if co in co_to_idx and cr in cr_to_idx and fe in fe_to_idx and T in T_to_idx:
-            i, j, k, t = co_to_idx[co], cr_to_idx[cr], fe_to_idx[fe], T_to_idx[T]
-            G_LIQ_tdt[i, j, k, t] = row['G_LIQ']
-            G_FCC_tdt[i, j, k, t] = row['G_FCC']
-            valid_count += 1
-
+    valid_count = len(df_valid)
     full_size = n_co * n_cr * n_fe * n_T
     sparsity = 1.0 - (valid_count / full_size)
 
@@ -173,8 +175,9 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, reg=1e-8):
     """
     4-way Canonical Polyadic Decomposition via Weighted Alternating Least Squares.
 
-    CRITICAL: Manual Z-score normalization with metadata for physical-unit error reporting.
-    Returns error in PHYSICAL units (J/mol), not normalized units.
+    OPTIMIZED & CORRECTED:
+    - Kronecker products precomputed once per mode update (outside inner loops)
+    - Correct Kronecker order matching NumPy C-order flattening (last index varies fastest)
 
     Decomposition: G[i,j,k,t] ~ sum_r lambda_r * A[i,r] * B[j,r] * C[k,r] * D[t,r]
     """
@@ -228,16 +231,20 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, reg=1e-8):
 
     prev_error = np.inf
 
-    # STEP 3: WEIGHTED ALTERNATING LEAST SQUARES
+    # STEP 3: WEIGHTED ALS (OPTIMIZED & CORRECTED)
     for iteration in range(max_iter):
+
+        # --- Update A (Mode 0) ---
+        # Flattened mask[i, :, :, :] is (J, K, L) -> L varies fastest (C-order)
+        # Correct Kronecker order: B, C, D (D varies fastest)
+        BCD_full = np.zeros((J * K * L, rank))
+        for r in range(rank):
+            BCD_full[:, r] = np.kron(np.kron(B[:, r], C[:, r]), D[:, r])
 
         for i in range(I):
             valid = mask[i, :, :, :].ravel()
             if np.sum(valid) > rank:
-                BCD = np.zeros((np.sum(valid), rank))
-                for r in range(rank):
-                    kronecker = np.kron(np.kron(D[:, r], C[:, r]), B[:, r])
-                    BCD[:, r] = kronecker[valid]
+                BCD = BCD_full[valid, :]
                 y = X[i, :, :, :].ravel()[valid]
                 AtA = BCD.T @ BCD + reg * np.eye(rank)
                 Aty = BCD.T @ y
@@ -249,16 +256,18 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, reg=1e-8):
         norms = np.linalg.norm(A, axis=0) + 1e-12
         A = A / norms
 
+        # --- Update B (Mode 1) ---
         X_flat = X.transpose(1, 0, 2, 3).reshape(J, -1)
         mask_flat = mask.transpose(1, 0, 2, 3).reshape(J, -1)
+        # Flattened dims: (I, K, L) -> L varies fastest -> Order: A, C, D
+        ACD_full = np.zeros((I * K * L, rank))
+        for r in range(rank):
+            ACD_full[:, r] = np.kron(np.kron(A[:, r], C[:, r]), D[:, r])
 
         for j in range(J):
             valid = mask_flat[j, :]
             if np.sum(valid) > rank:
-                ACD = np.zeros((np.sum(valid), rank))
-                for r in range(rank):
-                    kronecker = np.kron(np.kron(D[:, r], C[:, r]), A[:, r])
-                    ACD[:, r] = kronecker[valid]
+                ACD = ACD_full[valid, :]
                 y = X_flat[j, valid]
                 AtA = ACD.T @ ACD + reg * np.eye(rank)
                 Aty = ACD.T @ y
@@ -270,16 +279,18 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, reg=1e-8):
         norms = np.linalg.norm(B, axis=0) + 1e-12
         B = B / norms
 
+        # --- Update C (Mode 2) ---
         X_flat = X.transpose(2, 0, 1, 3).reshape(K, -1)
         mask_flat = mask.transpose(2, 0, 1, 3).reshape(K, -1)
+        # Flattened dims: (I, J, L) -> L varies fastest -> Order: A, B, D
+        ABD_full = np.zeros((I * J * L, rank))
+        for r in range(rank):
+            ABD_full[:, r] = np.kron(np.kron(A[:, r], B[:, r]), D[:, r])
 
         for k in range(K):
             valid = mask_flat[k, :]
             if np.sum(valid) > rank:
-                ABD = np.zeros((np.sum(valid), rank))
-                for r in range(rank):
-                    kronecker = np.kron(np.kron(D[:, r], B[:, r]), A[:, r])
-                    ABD[:, r] = kronecker[valid]
+                ABD = ABD_full[valid, :]
                 y = X_flat[k, valid]
                 AtA = ABD.T @ ABD + reg * np.eye(rank)
                 Aty = ABD.T @ y
@@ -291,16 +302,18 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, reg=1e-8):
         norms = np.linalg.norm(C, axis=0) + 1e-12
         C = C / norms
 
+        # --- Update D (Mode 3) ---
         X_flat = X.transpose(3, 0, 1, 2).reshape(L, -1)
         mask_flat = mask.transpose(3, 0, 1, 2).reshape(L, -1)
+        # Flattened dims: (I, J, K) -> K varies fastest -> Order: A, B, C
+        ABC_full = np.zeros((I * J * K, rank))
+        for r in range(rank):
+            ABC_full[:, r] = np.kron(np.kron(A[:, r], B[:, r]), C[:, r])
 
         for t in range(L):
             valid = mask_flat[t, :]
             if np.sum(valid) > rank:
-                ABC = np.zeros((np.sum(valid), rank))
-                for r in range(rank):
-                    kronecker = np.kron(np.kron(C[:, r], B[:, r]), A[:, r])
-                    ABC[:, r] = kronecker[valid]
+                ABC = ABC_full[valid, :]
                 y = X_flat[t, valid]
                 AtA = ABC.T @ ABC + reg * np.eye(rank)
                 Aty = ABC.T @ y
@@ -312,34 +325,27 @@ def cpd_als_4d(tensor, rank, max_iter=100, tol=1e-6, reg=1e-8):
         norms = np.linalg.norm(D, axis=0) + 1e-12
         D = D / norms
 
+        # --- Compute Reconstruction & Error ---
         recon_norm = np.zeros_like(X)
         for r in range(rank):
-            recon_norm += np.outer(A[:, r], np.kron(np.kron(D[:, r], C[:, r]), B[:, r])).reshape(I, J, K, L)
+            # Flattened dims: (J, K, L) -> L varies fastest -> Order: B, C, D
+            recon_norm += np.outer(A[:, r], np.kron(np.kron(B[:, r], C[:, r]), D[:, r])).reshape(I, J, K, L)
 
         observed_residuals = (X_norm - recon_norm)[mask]
-        if len(observed_residuals) > 0:
-            error_norm = np.sqrt(np.mean(observed_residuals**2))
-        else:
-            error_norm = np.inf
-
+        error_norm = np.sqrt(np.mean(observed_residuals**2)) if len(observed_residuals) > 0 else np.inf
         if abs(prev_error - error_norm) < tol:
             break
         prev_error = error_norm
 
-    # STEP 4: COMPUTE COMPONENT WEIGHTS
+    # STEP 4 & 5: COMPONENT WEIGHTS & DENORMALIZATION
     lam = np.ones(rank)
     for r in range(rank):
         lam[r] = (np.linalg.norm(A[:, r]) * np.linalg.norm(B[:, r]) * 
                   np.linalg.norm(C[:, r]) * np.linalg.norm(D[:, r]))
 
-    # STEP 5: DENORMALIZE RECONSTRUCTION FOR PHYSICAL VALIDATION
     recon_physical = recon_norm * sigma + mu
-
     physical_residuals = (tensor - recon_physical)[mask]
-    if len(physical_residuals) > 0:
-        final_error_physical = np.sqrt(np.mean(physical_residuals**2))
-    else:
-        final_error_physical = np.inf
+    final_error_physical = np.sqrt(np.mean(physical_residuals**2)) if len(physical_residuals) > 0 else np.inf
 
     meta = {
         'mu': mu,
@@ -881,7 +887,7 @@ with tab_cpd:
             mask = ~np.isnan(tensor_norm)
 
             for r in range(R_test):
-                recon += lam[r] * np.outer(A[:, r], np.kron(np.kron(D[:, r], C[:, r]), B[:, r])).reshape(I, J, K, L)
+                recon += lam[r] * np.outer(A[:, r], np.kron(np.kron(B[:, r], C[:, r]), D[:, r])).reshape(I, J, K, L)
 
             rel_error = np.sqrt(np.sum(mask * (tensor_norm - recon)**2) / np.sum(mask))
             abs_error = rel_error * tensor_std
@@ -955,7 +961,7 @@ with tab_recon:
 
         recon_norm = np.zeros_like(tensor_sel)
         for r in range(len(lam)):
-            recon_norm += lam[r] * np.outer(A[:, r], np.kron(np.kron(D[:, r], C[:, r]), B[:, r])).reshape(I, J, K, L)
+            recon_norm += lam[r] * np.outer(A[:, r], np.kron(np.kron(B[:, r], C[:, r]), D[:, r])).reshape(I, J, K, L)
 
         recon_physical = recon_norm * sigma + mu
         recon_buggy = recon_norm
