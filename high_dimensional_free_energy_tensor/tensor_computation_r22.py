@@ -477,13 +477,22 @@ def verify_quadratic_approximation(coeffs, A, B, C, D, lam, co_vals, cr_vals, fe
 # =============================================
 
 def plot_parity_comparison(original, reconstructed, mask, title, x_label, y_label):
-    """Create parity plot: Original vs Reconstructed values."""
+    """Create parity plot: Original vs Reconstructed values (WebGL + downsampled)."""
     orig_valid = original[mask]
     recon_valid = reconstructed[mask]
 
+    # --- FIX 1: Downsample to prevent browser freeze on large datasets ---
+    MAX_POINTS = 10000
+    if len(orig_valid) > MAX_POINTS:
+        np.random.seed(42)  # For reproducibility
+        indices = np.random.choice(len(orig_valid), MAX_POINTS, replace=False)
+        orig_valid = orig_valid[indices]
+        recon_valid = recon_valid[indices]
+
     fig = go.Figure()
 
-    fig.add_trace(go.Scatter(
+    # --- FIX 2: Use Scattergl for WebGL rendering performance ---
+    fig.add_trace(go.Scattergl(
         x=orig_valid,
         y=recon_valid,
         mode='markers',
@@ -889,6 +898,10 @@ with tab_cpd:
             for r in range(R_test):
                 recon += lam[r] * np.outer(A[:, r], np.kron(np.kron(B[:, r], C[:, r]), D[:, r])).reshape(I, J, K, L)
 
+            # --- FIX: Cache the reconstructed tensor to avoid recomputing in Tab 4 ---
+            st.session_state[f'recon_norm_{phase_key.lower()}'] = recon
+            # -----------------------------------------------------------------------
+
             rel_error = np.sqrt(np.sum(mask * (tensor_norm - recon)**2) / np.sum(mask))
             abs_error = rel_error * tensor_std
 
@@ -959,9 +972,15 @@ with tab_recon:
         I, J, K, L = tensor_sel.shape
         mask = ~np.isnan(tensor_sel)
 
-        recon_norm = np.zeros_like(tensor_sel)
-        for r in range(len(lam)):
-            recon_norm += lam[r] * np.outer(A[:, r], np.kron(np.kron(B[:, r], C[:, r]), D[:, r])).reshape(I, J, K, L)
+        # --- FIX: Load cached reconstruction instead of recomputing heavy Kronecker products ---
+        if f'recon_norm_{phase_key.lower()}' in st.session_state:
+            recon_norm = st.session_state[f'recon_norm_{phase_key.lower()}']
+        else:
+            # Fallback if somehow not in session state
+            recon_norm = np.zeros_like(tensor_sel)
+            for r in range(len(lam)):
+                recon_norm += lam[r] * np.outer(A[:, r], np.kron(np.kron(B[:, r], C[:, r]), D[:, r])).reshape(I, J, K, L)
+        # ------------------------------------------------------------------------------------
 
         recon_physical = recon_norm * sigma + mu
         recon_buggy = recon_norm
