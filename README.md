@@ -51,6 +51,9 @@
 
 [![meaningtowords](https://img.shields.io/badge/Gphase-v24.0-green)](https://free-energy-tensor-visualization24.streamlit.app/) (Successful denormalization of reconstructed G_CPD tensor into physical units of J/mol, Same unit for comparison of G_CPD (J/mol) and G_Quadratic (J/mol), Included Factor Matrices Visualization and Advanced Quadratic Expansion Analysis, Advanced v10, Temperature-morphed Free energy Tensor Visualization and ThermoSpherical Harmonics, G Tensor Quantification and Computation, Applications of Tensor Knowledge in Additive Manufacturing )
 
+[![meaningtowords](https://img.shields.io/badge/Gphase-v25.0-green)](https://free-energy-tensor-visualization25.streamlit.app/) (Successful denormalization of reconstructed G_CPD tensor into physical units of J/mol, Display change for comparison between G_CPD and G_Quadratic, Same unit for comparison of G_CPD (J/mol) and G_Quadratic (J/mol), Included Factor Matrices Visualization and Advanced Quadratic Expansion Analysis, Advanced v10, Temperature-morphed Free energy Tensor Visualization and ThermoSpherical Harmonics, G Tensor Quantification and Computation, Applications of Tensor Knowledge in Additive Manufacturing )
+
+
 
 
 
