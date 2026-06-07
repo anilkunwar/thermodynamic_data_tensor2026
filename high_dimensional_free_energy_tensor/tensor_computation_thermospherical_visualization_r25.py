@@ -1534,7 +1534,6 @@ def compute_quadratic_coefficients_from_cpd(
 
 
 def verify_quadratic_approximation(coeffs, A, B, C, D, lam, co_vals, cr_vals, fe_vals, T_vals, test_compositions, test_temperatures, sigma=1.0, mu=0.0):
-def verify_quadratic_approximation(coeffs, A, B, C, D, lam, co_vals, cr_vals, fe_vals, T_vals, test_compositions, test_temperatures, sigma=1.0, mu=0.0):
     """
     Verify the quadratic approximation against the full CPD reconstruction.
     Returns error metrics, distance metrics, and comparison data.
@@ -1585,6 +1584,12 @@ def verify_quadratic_approximation(coeffs, A, B, C, D, lam, co_vals, cr_vals, fe
         })
 
     return pd.DataFrame(results)
+
+
+
+# =============================================
+
+
 def plot_cpd_vs_quadratic_comparison(coeffs, A, B, C, D, lam,
                                      co_vals, cr_vals, fe_vals, T_vals,
                                      c_eq, T_m, sigma=1.0, mu=0.0):
@@ -1736,11 +1741,7 @@ def plot_cpd_vs_quadratic_comparison(coeffs, A, B, C, D, lam,
 
     # --- 6. Box Plot by Distance Bins ---
     bins = [0, 0.02, 0.05, 0.10, 0.20]
-    labels = ['Very Near
-(<0.02)', 'Near
-(0.02-0.05)', 'Moderate
-(0.05-0.10)', 'Far
-(>0.10)']
+    labels = ['Very Near (<0.02)', 'Near (0.02-0.05)', 'Moderate (0.05-0.10)', 'Far (>0.10)']
     verify_df['dist_bin'] = pd.cut(verify_df['dist_composition'], bins=bins, labels=labels)
 
     fig.add_trace(go.Box(y=verify_df['relative_error_pct'], x=verify_df['dist_bin'],
@@ -1773,6 +1774,90 @@ def plot_cpd_vs_quadratic_comparison(coeffs, A, B, C, D, lam,
     fig.update_yaxes(title_text="Frequency", row=3, col=2)
 
     return fig
+
+def plot_3d_comparison_surface(coeffs, A, B, C, D, lam,
+                                co_vals, cr_vals, fe_vals, T_vals,
+                                c_eq, T_m, sh_R_fixed=0.5, sigma=1.0, mu=0.0):
+    """
+    3D spherical harmonic comparison of Full CPD vs Quadratic
+    """
+    n_theta, n_phi = 60, 60
+    theta = np.linspace(0, 2*np.pi, n_theta)
+    phi = np.linspace(0, np.pi, n_phi)
+    TH, PH = np.meshgrid(theta, phi)
+
+    x = sh_R_fixed * np.sin(PH) * np.cos(TH)
+    y = sh_R_fixed * np.sin(PH) * np.sin(TH)
+    z = sh_R_fixed * np.cos(PH)
+
+    valid = (x + y + z) <= 1.0
+    valid = valid & (x >= 0) & (y >= 0) & (z >= 0)
+
+    R = len(lam)
+    A_funcs = [UnivariateSpline(co_vals, A[:, r], s=0, ext=3) for r in range(R)]
+    B_funcs = [UnivariateSpline(cr_vals, B[:, r], s=0, ext=3) for r in range(R)]
+    C_funcs = [UnivariateSpline(fe_vals, C[:, r], s=0, ext=3) for r in range(R)]
+    D_funcs = [UnivariateSpline(T_vals, D[:, r], s=0, ext=3) for r in range(R)]
+
+    G_full = np.full_like(x, np.nan)
+    G_quad = np.full_like(x, np.nan)
+
+    for i in range(n_phi):
+        for j in range(n_theta):
+            if valid[i, j]:
+                g_norm = sum(lam[r] * A_funcs[r](x[i,j]) * B_funcs[r](y[i,j]) * 
+                            C_funcs[r](z[i,j]) * D_funcs[r](T_m) for r in range(R))
+                G_full[i, j] = g_norm * sigma + mu  # DENORMALIZE
+
+                g_quad = (coeffs['G_eq'] + 
+                         coeffs['A_Co']*(x[i,j] - c_eq[0])**2 +
+                         coeffs['A_Cr']*(y[i,j] - c_eq[1])**2 +
+                         coeffs['A_Fe']*(z[i,j] - c_eq[2])**2)
+                G_quad[i, j] = g_quad
+
+    from plotly.subplots import make_subplots
+    fig = make_subplots(
+        rows=1, cols=2,
+        specs=[[{'type': 'surface'}, {'type': 'surface'}]],
+        subplot_titles=('Full CPD Gibbs Energy', 'Quadratic Approximation')
+    )
+
+    fig.add_trace(go.Surface(
+        x=x, y=y, z=z, surfacecolor=G_full,
+        colorscale='Viridis',
+        name='Full CPD',
+        showscale=True,
+        colorbar=dict(title="G (J/mol)", len=0.8, x=0.0)
+    ), row=1, col=1)
+
+    fig.add_trace(go.Surface(
+        x=x, y=y, z=z, surfacecolor=G_quad,
+        colorscale='Viridis',
+        name='Quadratic',
+        showscale=True,
+        colorbar=dict(title="G (J/mol)", len=0.8, x=1.0)
+    ), row=1, col=2)
+
+    fig.update_layout(
+        title=f"3D Comparison: Full CPD vs Quadratic at T={T_m}K",
+        height=600,
+        scene=dict(
+            xaxis=dict(title="x_Co", range=[0, sh_R_fixed]),
+            yaxis=dict(title="x_Cr", range=[0, sh_R_fixed]),
+            zaxis=dict(title="x_Fe", range=[0, sh_R_fixed]),
+            aspectmode='cube'
+        ),
+        scene2=dict(
+            xaxis=dict(title="x_Co", range=[0, sh_R_fixed]),
+            yaxis=dict(title="x_Cr", range=[0, sh_R_fixed]),
+            zaxis=dict(title="x_Fe", range=[0, sh_R_fixed]),
+            aspectmode='cube'
+        )
+    )
+
+    return fig
+
+
 def plot_error_metrics_dashboard(verify_df):
     """
     Create dashboard showing error metrics focused on relative error and distance from equilibrium.
@@ -1862,6 +1947,7 @@ def plot_error_metrics_dashboard(verify_df):
     fig.update_yaxes(title_text="Relative Error (%)", row=2, col=2)
 
     return fig
+
 
 def plot_1d_slice_comparison(coeffs, A, B, C, D, lam, co_vals, cr_vals, fe_vals, T_vals,
                                c_eq, T_m, sigma=1.0, mu=0.0, variant='co'):
@@ -1984,6 +2070,13 @@ def plot_1d_slice_comparison(coeffs, A, B, C, D, lam, co_vals, cr_vals, fe_vals,
 
     return fig
 
+
+
+# =============================================
+# PLOTLY VISUALIZATION FUNCTIONS FOR AM ANALYSIS
+# =============================================
+
+def plot_transition_surface_3d(T_melt, valid_mask, co_vals, cr_vals, fe_vals,
                                 T_laser=2800, T_haz=1200):
     """
     Create 3D scatter plot of transition temperature surface T*(x).
@@ -5489,6 +5582,7 @@ with tab_quadratic:
             - **Temperature:** ±200-300K of equilibrium temperature
             - **Error:** Typically <1% relative error in this range
             """)
+
 
 with tab_am:
     st.header("🏭 Additive Manufacturing Design Assistant")
