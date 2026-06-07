@@ -45,7 +45,12 @@
 
 [![meaningtowords](https://img.shields.io/badge/Gphase-v21.0-green)](https://free-energy-tensor-visualization21.streamlit.app/) (Tutorial on Tensor Computation )
 
-[![meaningtowords](https://img.shields.io/badge/Gphase-v22.0-green)](https://free-energy-tensor-visualization22.streamlit.app/) (Tutorial on Tensor Computation )
+[![meaningtowords](https://img.shields.io/badge/Gphase-v22.0-green)](https://free-energy-tensor-visualization22.streamlit.app/) (Tutorial on Tensor Computation, Denormalization procedure is successfully performed )
+
+[![meaningtowords](https://img.shields.io/badge/Gphase-v23.0-green)](https://free-energy-tensor-visualization23.streamlit.app/) (Tutorial on Tensor Computation, Denormalization procedure is successfully performed )
+
+[![meaningtowords](https://img.shields.io/badge/Gphase-v24.0-green)](https://free-energy-tensor-visualization24.streamlit.app/) (Successful denormalization of reconstructed G_CPD tensor into physical units of J/mol, Same unit for comparison of G_CPD (J/mol) and G_Quadratic (J/mol), Included Factor Matrices Visualization and Advanced Quadratic Expansion Analysis, Advanced v10, Temperature-morphed Free energy Tensor Visualization and ThermoSpherical Harmonics, G Tensor Quantification and Computation, Applications of Tensor Knowledge in Additive Manufacturing )
+
 
 
 
